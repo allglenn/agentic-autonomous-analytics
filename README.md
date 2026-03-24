@@ -151,12 +151,12 @@ flowchart TD
     G --> H
 
     %% ---------------- EXECUTOR ----------------
-    H --> I[Executor Agent]
+    H --> I[Executor Agent<br/>LoopAgent — max_iterations enforced by ADK]
 
     I --> J[Read Plan + Initialize Context]
 
     %% ---- REACT LOOP START ----
-    J --> K[LLM Thought<br/>Select next step]
+    J --> K[LLM Thought<br/>Select next step — LlmAgent]
 
     K --> L{Action Type}
 
