@@ -33,6 +33,6 @@ _executor_step = LlmAgent(
 # LoopAgent enforces max_iterations at the ADK framework level — not just a prompt hint
 executor_agent = LoopAgent(
     name="executor",
-    sub_agent=_executor_step,
+    sub_agents=[_executor_step],
     max_iterations=guardrails.max_executor_steps,
 )
