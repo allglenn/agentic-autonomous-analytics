@@ -128,7 +128,7 @@ GROUP BY channel
 flowchart TD
 
     %% ---------------- USER ----------------
-    A[User Question] --> B[Planner Agent]
+    A[User Question] --> B[Planner Agent<br/>LlmAgent · gemini-2.5-pro]
 
     %% ---------------- PLANNER ----------------
     B --> C[LLM Reasoning<br/>Classify intent + metrics + dimensions]
@@ -142,21 +142,25 @@ flowchart TD
     %% ---------------- ANALYSIS PATH ----------------
     CL -->|Yes| D{Intent Type}
 
-    D -->|Single Value| E[Plan<br/>1 step query]
-    D -->|Comparison| F[Plan<br/>Multi-query comparison]
-    D -->|Insight / Root Cause| G[Plan<br/>Iterative drill-down]
+    D -->|Single Value| E[Plan: 1 step query]
+    D -->|Comparison| F[Plan: Multi-query comparison]
+    D -->|Insight / Root Cause| G[Plan: Iterative drill-down]
 
     E --> H[Structured Analysis Plan]
     F --> H
     G --> H
 
-    %% ---------------- EXECUTOR ----------------
-    H --> I[Executor Agent<br/>LoopAgent — max_iterations enforced by ADK]
+    H --> HS[(state.analysis_plan)]
 
-    I --> J[Read Plan + Initialize Context]
+    %% ---------------- OUTER LOOP ----------------
+    HS --> AL[analysis_loop<br/>LoopAgent · max 3 retries]
 
-    %% ---- REACT LOOP START ----
-    J --> K[LLM Thought<br/>Select next step — LlmAgent]
+    %% ---------------- EXECUTOR — INNER LOOP ----------------
+    AL --> I[executor_agent<br/>LoopAgent · max 10 steps]
+
+    I --> IR[Read state.analysis_plan<br/>+ state.critic_notes if retry]
+
+    IR --> K[LlmAgent Thought<br/>gemini-2.5-flash · select next step]
 
     K --> L{Action Type}
 
@@ -171,28 +175,31 @@ flowchart TD
 
     P --> Q[BigQuery Execution]
 
-    Q --> R[Observation<br/>Query Result]
+    Q --> R[Observation · Query Result]
 
-    %% ---------------- LOOP CONTROL ----------------
+    %% ---------------- REACT LOOP CONTROL ----------------
     R --> S{Success Criteria Met?}
 
-    S -->|No| T[LLM Thought<br/>Refine / Drill deeper]
+    S -->|No| T[Refine / Drill deeper]
     T --> K
 
-    S -->|Yes| U[LLM Thought<br/>Synthesize Findings]
+    S -->|Yes| U[Synthesize Findings]
 
-    %% ---------------- DRAFT OUTPUT ----------------
-    U --> V[Draft Answer]
+    U --> V[(state.draft_answer)]
 
-    %% ---------------- CRITIC ----------------
-    V --> W[Critic Agent]
+    %% ---------------- CRITIC GATE ----------------
+    V --> W[CriticGate<br/>BaseAgent]
 
-    W --> X{Answer Valid?}
+    W --> WL[LlmAgent · gemini-2.5-pro<br/>Validate correctness + completeness]
 
-    X -->|No| Y[Feedback<br/>Missing evidence / weak reasoning]
-    Y --> I
+    WL --> X{validated?}
 
-    X -->|Yes| Z[Final Answer]
+    X -->|No| XN[(state.critic_notes<br/>feedback for next retry)]
+    XN --> AL
+
+    X -->|Yes| XY[escalate=True<br/>Break analysis_loop]
+
+    XY --> Z[Final Answer]
 
     %% ---------------- RESPONSE ----------------
     Z --> AA[Return to User]
@@ -207,27 +214,36 @@ flowchart TD
 - Decides the analysis path: single value / comparison / insight
 - If the intent is ambiguous or references unknown metrics → returns a **clarification question** directly to the user, skipping the executor entirely
 
-#### 2. Executor — ReAct Loop (center)
+#### 2. analysis_loop — Outer LoopAgent (max 3 retries)
 
-The core reasoning engine. Runs iteratively until success criteria are met:
+Wraps the Executor and CriticGate. Each iteration is one full attempt:
+Executor runs → Critic validates → retry if needed.
+Stops when `CriticGate` escalates (`validated=True`) or retries are exhausted.
+
+#### 3. Executor — Inner ReAct LoopAgent (max 10 steps)
+
+The core reasoning engine (`gemini-2.5-flash`):
 
 ```text
 Thought → Action → Observation → Thought → ...
 ```
 
-- Keeps querying and drilling down until the answer is complete
-- Each loop refines the analysis based on the previous observation
+- Reads `state.analysis_plan` (from Planner) and `state.critic_notes` (from previous retry)
+- Keeps querying and drilling down until success criteria are met
+- Writes `state.draft_answer` when done
 
-#### 3. Tool Layer — Semantic Abstraction (middle)
+#### 4. Tool Layer — Semantic Abstraction
 
 - The Semantic Layer translates metric requests into SQL
 - BigQuery executes the generated query
 - The agent never writes or touches raw SQL directly
 
-#### 4. Critic (bottom)
+#### 5. CriticGate — Custom BaseAgent (bottom)
 
-- Validates the draft answer for correctness and completeness
-- If the answer is weak or incomplete, sends feedback back to the Executor to trigger re-analysis
+- Runs the critic `LlmAgent` (`gemini-2.5-pro`) to validate correctness and completeness
+- Reads `state.final_answer` (a dict) after the LlmAgent writes it
+- `validated=True` → yields `Event(escalate=True)` → `analysis_loop` stops
+- `validated=False` → writes `critic_notes` to state → loop retries with executor
 
 ---
 

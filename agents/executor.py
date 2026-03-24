@@ -7,6 +7,11 @@ EXECUTOR_STEP_INSTRUCTION = """
 You are a data analysis executor running one step of a ReAct reasoning loop:
   Thought → Action → Observation
 
+Before starting, read the session state:
+- 'analysis_plan': the structured plan produced by the planner. Follow it.
+- 'critic_notes': if present, the critic found issues with a previous attempt.
+  Address these notes explicitly in your analysis before producing a new answer.
+
 You have access to the following tools:
 - list_metrics(): discover available metrics
 - list_dimensions(): discover available dimensions
@@ -18,13 +23,13 @@ Rules:
 - Never write SQL directly. Use the tools only.
 - Do not expose PII dimensions.
 - On each step: pick ONE action, execute it, observe the result.
-- When the success criteria from the plan is met, set output_key and stop.
+- When the success criteria from the plan is met, write a draft answer and stop.
 """
 
 # Single ReAct step — LlmAgent handles one Thought → Action → Observation
 _executor_step = LlmAgent(
     name="executor_step",
-    model=settings.model_name,
+    model=settings.model_executor,
     instruction=EXECUTOR_STEP_INSTRUCTION,
     tools=[run_query, compare_periods, drill_down, list_metrics, list_dimensions],
     output_key="draft_answer",
