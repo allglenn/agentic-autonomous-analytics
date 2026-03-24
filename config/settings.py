@@ -2,10 +2,12 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    google_cloud_project: str
-    google_application_credentials: str
+    google_api_key: str
+    google_genai_api_key: str
     bigquery_dataset: str = "analytics"
-    model_name: str = "gemini-2.5-pro"
+    model_planner: str = "gemini-2.5-pro"
+    model_executor: str = "gemini-2.5-flash"
+    model_critic: str = "gemini-2.5-pro"
     api_host: str = "0.0.0.0"
     api_port: int = 8080
 

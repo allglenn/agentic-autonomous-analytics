@@ -28,7 +28,7 @@ Never query data yourself — only plan.
 
 planner_agent = LlmAgent(
     name="planner",
-    model=settings.model_name,
+    model=settings.model_planner,
     instruction=PLANNER_INSTRUCTION,
     output_schema=AnalysisPlan,
     output_key="analysis_plan",
