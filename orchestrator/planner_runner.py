@@ -1,24 +1,23 @@
 import json
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
 from google.genai.types import Content, Part
 from agents.planner import planner_agent
 from models.plan import AnalysisPlan
+from config.session import session_service
 
-_session_service = InMemorySessionService()
 _runner = Runner(
     agent=planner_agent,
     app_name="planner",
-    session_service=_session_service,
+    session_service=session_service,
 )
 
 
 async def run_planner(question: str) -> AnalysisPlan:
     """Run only the planner agent and return the structured AnalysisPlan."""
-    session = _session_service.create_session(
+    session = await session_service.create_session(
         app_name="planner",
         user_id="user",
-        session_id=question[:40],  # use truncated question as a unique key
+        session_id=question[:40],
     )
     message = Content(role="user", parts=[Part(text=question)])
     events = list(_runner.run(

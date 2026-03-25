@@ -1,16 +1,15 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
 from google.genai.types import Content, Part
 from orchestrator.pipeline import pipeline
 from orchestrator.planner_runner import run_planner
 from models.answer import FinalAnswer
 from models.plan import IntentType
+from config.session import session_service
 
 router = APIRouter()
 
-session_service = InMemorySessionService()
 runner = Runner(agent=pipeline, app_name="data_analyst", session_service=session_service)
 
 
@@ -43,7 +42,7 @@ async def ask(request: QuestionRequest):
             )
 
         # Step 2: intent is clear — run the full pipeline
-        session = session_service.create_session(
+        session = await session_service.create_session(
             app_name="data_analyst",
             user_id="user",
             session_id=request.session_id,
