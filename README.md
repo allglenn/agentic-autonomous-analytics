@@ -398,6 +398,37 @@ MODEL_CRITIC=gemini-2.5-pro
 DATABASE_URL=postgresql+asyncpg://adk:adk@localhost:5432/adk_sessions
 ```
 
+### Seed the Dataset
+
+The seed script generates realistic ecommerce data (orders, order items, sessions) and loads it into BigQuery.
+
+**With the local emulator (recommended for dev):**
+
+```bash
+make docker-up   # starts BigQuery emulator + PostgreSQL
+make seed        # loads 1 000 orders (default)
+make seed-large  # loads 5 000 orders
+```
+
+**With real GCP BigQuery:**
+
+```bash
+# set GOOGLE_CLOUD_PROJECT in .env, then:
+python3 scripts/seed_data.py --orders 1000
+```
+
+**What gets generated:**
+
+| Table | Rows (default) | Description |
+| ----- | -------------- | ----------- |
+| `orders` | 1 000 | Orders with channel, status, payment, geography, discount |
+| `order_items` | ~2 500 | Line items per order with product, brand, category, price |
+| `sessions` | 3 500 | Web sessions — 1 000 converted, 2 500 non-converted |
+
+All columns match the semantic layer schema so every metric and dimension works immediately after seeding.
+
+---
+
 ### Run — Docker (API + PostgreSQL)
 
 ```bash
