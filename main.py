@@ -3,9 +3,12 @@ load_dotenv()
 
 import asyncio
 from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
 from google.genai.types import Content, Part
 from orchestrator.pipeline import pipeline
-from config.session import session_service
+
+# CLI uses in-memory sessions — no Postgres needed for local interactive use
+session_service = InMemorySessionService()
 
 
 async def run_cli():
@@ -14,7 +17,7 @@ async def run_cli():
         app_name="data_analyst",
         session_service=session_service,
     )
-    session = await session_service.create_session(
+    session = session_service.create_session(
         app_name="data_analyst",
         user_id="user",
         session_id="cli",

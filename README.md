@@ -1,14 +1,15 @@
 # AI Data Analyst Agent
 
-**BigQuery + Semantic Layer + Google ADK**
+## BigQuery + Semantic Layer + Google ADK 1.27.4
 
 An agentic AI system that explores business data using natural language, powered by:
 
-- **Google ADK** — Agent orchestration
-- **BigQuery** — Data warehouse
-- **Semantic Layer** — Looker / custom abstraction
-- **ReAct Reasoning** — Thought → Action → Observation
-- **Planner → Executor → Critic** architecture
+- **Google ADK 1.27.4** — Agent orchestration (`LlmAgent`, `LoopAgent`, `SequentialAgent`, `BaseAgent`)
+- **BigQuery** — Cloud data warehouse
+- **Semantic Layer** — No raw SQL in agents, metric abstraction layer
+- **ReAct Reasoning** — Thought → Action → Observation (enforced by `LoopAgent`)
+- **Planner → Executor → CriticGate** — ADK-native multi-agent pipeline
+- **PostgreSQL** — Persistent session management via `DatabaseSessionService`
 
 ---
 
@@ -51,13 +52,18 @@ Capabilities:
 - Drill down across dimensions
 - Detect anomalies
 
-### 3. Critic Agent (Optional but Recommended)
+### 3. CriticGate (BaseAgent)
+
+A custom ADK `BaseAgent` — not optional, always runs after the executor.
 
 Validates:
 
 - Correctness of conclusions
 - Completeness of analysis
 - Alignment with data
+
+On `validated=True` → yields `Event(escalate=True)` to break the `analysis_loop`.
+On `validated=False` → writes `critic_notes` to session state for the executor to retry.
 
 ### 4. Semantic Layer
 
@@ -81,11 +87,49 @@ GROUP BY channel
 
 | Tool | Description |
 | ---- | ----------- |
-| `run_query(metric, dimensions, time_range)` | Execute a metric query against the semantic layer |
-| `compare_periods(metric, dimensions, period_1, period_2)` | Compare the same metric across two time periods |
-| `drill_down(context, dimension)` | Segment results by a new dimension |
+| `run_query(metric, dimensions, time_range)` | Execute a metric query via the semantic layer |
+| `compare_periods(metric, dimensions, period_1, period_2)` | Compare a metric across two time periods |
+| `drill_down(metric, current_dimensions, new_dimension, time_range)` | Segment deeper by adding a dimension |
 | `list_metrics()` | List all available metrics |
-| `list_dimensions()` | List all available dimensions |
+| `list_dimensions()` | List all available dimensions (PII excluded) |
+
+---
+
+## Semantic Layer — Ecommerce Model
+
+The agent never writes SQL. All queries go through the semantic layer which resolves metrics and dimensions to their source tables.
+
+### Metrics (19)
+
+| Group | Metrics | Source Table |
+| ----- | ------- | ------------ |
+| Revenue | `revenue`, `net_revenue`, `refund_amount`, `shipping_cost` | `orders` |
+| Orders | `orders`, `average_order_value`, `cancellation_rate`, `refund_rate` | `orders` |
+| Customers | `new_customers`, `repeat_customers`, `unique_customers` | `orders` |
+| Products | `units_sold`, `items_per_order` | `order_items` |
+| Traffic | `sessions`, `conversion_rate`, `bounce_rate`, `add_to_cart_rate` | `sessions` |
+
+### Dimensions (23)
+
+| Group | Dimensions |
+| ----- | ---------- |
+| Channel | `channel`, `traffic_source`, `campaign`, `utm_medium` |
+| Geography | `country`, `region`, `city` |
+| Product | `product_category`, `brand`, `product_name` |
+| Customer | `customer_segment`, `customer_type` |
+| Device | `device`, `device_os` |
+| Time | `day`, `week`, `month` |
+| Promotion | `promotion_code`, `discount_type` |
+| Order | `order_status`, `payment_method` |
+
+### Time Ranges (12)
+
+`today` · `last_7_days` · `last_30_days` · `last_90_days` · `this_week` · `this_month` · `this_quarter` · `this_year` · `previous_7_days` · `previous_30_days` · `previous_month` · `previous_quarter`
+
+### PII Protection
+
+The following fields are permanently blocked from the agent:
+`user_id` · `customer_id` · `email` · `phone` · `ip_address` · `full_name` · `address`
 
 ---
 
@@ -93,31 +137,31 @@ GROUP BY channel
 
 ### Single Value
 
-```
+```text
 "What is revenue today?"
 ```
 
-→ single query
+→ single query against `orders`
 
 ### Comparison
 
-```
-"Compare revenue this week vs last week"
+```text
+"Compare conversion_rate this month vs last month by device"
 ```
 
-→ multiple queries + comparison
+→ two queries against `sessions` + delta
 
 ### Insight / Root Cause
 
-```
-"Why did revenue drop?"
+```text
+"Why did revenue drop last week?"
 ```
 
 → iterative:
 
-1. Detect anomaly
-2. Segment (channel, country…)
-3. Drill down (campaign…)
+1. Detect drop — `revenue` over `last_7_days` vs `previous_7_days`
+2. Segment — by `channel`, `country`, `product_category`
+3. Drill down — by `campaign`, `brand`
 4. Identify root cause
 
 ---
@@ -249,14 +293,16 @@ Thought → Action → Observation → Thought → ...
 
 ## Tech Stack
 
-| Technology       | Purpose                               |
-| ---------------- | ------------------------------------- |
-| Google ADK       | Agent orchestration framework         |
-| BigQuery         | Cloud data warehouse                  |
-| Looker / Custom  | Semantic layer / business abstraction |
-| Python / FastAPI | Backend implementation                |
-| Cloud Run        | Deployment                            |
-| ReAct pattern    | Iterative reasoning                   |
+| Technology         | Purpose                                             |
+| ------------------ | --------------------------------------------------- |
+| Google ADK 1.27.4  | Agent orchestration (`LlmAgent`, `LoopAgent`…)      |
+| Gemini 2.5 Pro     | Planner + Critic reasoning                          |
+| Gemini 2.5 Flash   | Executor tool-call loop                             |
+| BigQuery           | Cloud data warehouse                                |
+| Semantic Layer     | Metric abstraction — no raw SQL in agents           |
+| PostgreSQL         | Persistent session state (DatabaseSessionService)   |
+| Python / FastAPI   | Backend + REST API                                  |
+| Docker / Cloud Run | Containerised deployment                            |
 
 ---
 
@@ -264,48 +310,52 @@ Thought → Action → Observation → Thought → ...
 
 ```
 Agentic_aut/
-├── agents/                    # ADK LlmAgent definitions
-│   ├── planner.py             # Classifies intent, outputs AnalysisPlan
-│   ├── executor.py            # ReAct loop with tools
-│   └── critic.py              # Validates and finalises the answer
+├── agents/
+│   ├── planner.py             # LlmAgent — classifies intent, outputs AnalysisPlan
+│   ├── executor.py            # LoopAgent wrapping LlmAgent — ReAct tool-call loop
+│   └── critic.py              # CriticGate (BaseAgent) — validates, escalates on success
 │
-├── tools/                     # ADK-compatible tool functions
+├── tools/                     # ADK tool functions (no SQL, semantic layer only)
 │   ├── run_query.py
 │   ├── compare_periods.py
 │   ├── drill_down.py
 │   ├── list_metrics.py
 │   └── list_dimensions.py
 │
-├── semantic_layer/            # Metric/dimension definitions — no raw SQL in agents
+├── semantic_layer/            # Metric/dimension registry — agents never touch SQL
 │   ├── metrics.py
 │   ├── dimensions.py
 │   └── resolver.py            # Translates metric + dims → BigQuery SQL
 │
-├── bigquery/                  # BigQuery client and execution
-│   ├── client.py
-│   └── executor.py
+├── bigquery/
+│   ├── client.py              # Singleton BQ client
+│   └── executor.py            # Executes SQL, returns rows
 │
-├── orchestrator/              # ADK pipeline wiring
-│   └── pipeline.py            # SequentialAgent([planner, executor, critic])
+├── orchestrator/
+│   ├── pipeline.py            # SequentialAgent([planner, analysis_loop])
+│   └── planner_runner.py      # Lightweight runner — checks intent before full pipeline
 │
-├── api/                       # FastAPI layer
-│   ├── main.py
+├── api/
+│   ├── main.py                # FastAPI app entrypoint
 │   └── routes.py              # POST /ask, GET /metrics, GET /dimensions
 │
-├── models/                    # Pydantic schemas shared across layers
-│   ├── plan.py                # AnalysisPlan, IntentType
+├── models/                    # Pydantic schemas shared across all layers
+│   ├── plan.py                # AnalysisPlan, IntentType (incl. clarification_needed)
 │   ├── query.py               # QueryRequest, QueryResult
 │   └── answer.py              # DraftAnswer, FinalAnswer
 │
 ├── config/
 │   ├── settings.py            # Env vars via pydantic-settings
-│   └── guardrails.py          # Allowlists, max_steps, PII rules
+│   ├── guardrails.py          # Metric allowlist, max_steps, PII rules
+│   └── session.py             # Shared DatabaseSessionService (PostgreSQL)
 │
 ├── tests/
 │   ├── test_semantic_layer.py
 │   └── test_guardrails.py
 │
-├── main.py                    # CLI entrypoint
+├── main.py                    # CLI entrypoint (asyncio)
+├── docker-compose.yml         # API + PostgreSQL
+├── Makefile                   # venv, run, dev, test, docker shortcuts
 ├── requirements.txt
 ├── .env.example
 └── Dockerfile
@@ -318,47 +368,46 @@ Agentic_aut/
 ### Prerequisites
 
 - Python 3.11+
+- Google API key (Gemini access)
 - Google Cloud project with BigQuery enabled
-- Google ADK credentials (`google-adk`)
-- Service account with BigQuery Data Viewer + Job User roles
+- Docker (for PostgreSQL session store)
 
 ### Installation
 
 ```bash
-git clone https://github.com/your-username/Agentic_aut.git
-cd Agentic_aut
-pip install -r requirements.txt
+git clone https://github.com/allglenn/agentic-autonomous-analytics.git
+cd agentic-autonomous-analytics
+make venv
+source .venv/bin/activate
+make install
 ```
 
 ### Configuration
-
-Copy the example env file and fill in your values:
 
 ```bash
 cp .env.example .env
 ```
 
 ```env
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_APPLICATION_CREDENTIALS=path/to/service-account.json
+GOOGLE_API_KEY=your-google-api-key
+GOOGLE_GENAI_API_KEY=your-google-genai-api-key
 BIGQUERY_DATASET=analytics
-MODEL_NAME=gemini-1.5-pro
+MODEL_PLANNER=gemini-2.5-pro
+MODEL_EXECUTOR=gemini-2.5-flash
+MODEL_CRITIC=gemini-2.5-pro
+DATABASE_URL=postgresql+asyncpg://adk:adk@localhost:5432/adk_sessions
 ```
 
-### Run — CLI
+### Run — Docker (API + PostgreSQL)
 
 ```bash
-python main.py
+make docker-up
 ```
 
-```
-> Why did revenue drop last week?
-```
-
-### Run — API
+### Run — Local API (requires PostgreSQL running)
 
 ```bash
-uvicorn api.main:app --reload
+make dev
 ```
 
 ```bash
@@ -367,11 +416,14 @@ curl -X POST http://localhost:8080/ask \
   -d '{"question": "Why did revenue drop last week?"}'
 ```
 
-### Run — Docker
+### Run — CLI
 
 ```bash
-docker build -t agentic-analyst .
-docker run -p 8080:8080 --env-file .env agentic-analyst
+make run
+```
+
+```text
+> Why did revenue drop last week?
 ```
 
 ---

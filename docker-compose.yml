@@ -15,17 +15,32 @@ services:
       timeout: 5s
       retries: 5
 
+  bigquery:
+    image: ghcr.io/goccy/bigquery-emulator:latest
+    platform: linux/amd64
+    ports:
+      - "9050:9050"   # BigQuery REST API
+      - "9060:9060"   # BigQuery gRPC API
+    command:
+      - --project=local-project
+      - --dataset=analytics
+
   api:
     build: .
     ports:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      - BIGQUERY_EMULATOR_HOST=bigquery:9050
+      - GOOGLE_CLOUD_PROJECT=local-project
     volumes:
       - .:/app
     depends_on:
       postgres:
         condition: service_healthy
+      bigquery:
+        condition: service_started
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
 
 volumes:

@@ -1,4 +1,4 @@
-.PHONY: venv install run dev test docker-up docker-down
+.PHONY: venv install run dev run-dev test docker-up docker-down
 
 # ── Virtual environment ────────────────────────────────────────────
 venv:
@@ -15,13 +15,15 @@ run:
 dev:
 	uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
 
+run-dev: dev
+
 # ── Tests ──────────────────────────────────────────────────────────
 test:
 	pytest tests/ -v
 
 # ── Docker ─────────────────────────────────────────────────────────
 docker-up:
-	docker-compose up --build
+	docker compose up --build
 
 docker-down:
-	docker-compose down
+	docker compose down
