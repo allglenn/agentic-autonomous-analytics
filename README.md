@@ -459,6 +459,51 @@ make run
 
 ---
 
+## Example Questions — Full Pipeline Coverage
+
+These questions are designed to exercise every path in the architecture diagram. Run them after seeding to validate the full system end-to-end.
+
+### Path 1 — Single Value (one query, one metric)
+
+- What is the total revenue for the last 30 days?
+- How many orders were placed this month?
+- What is the current conversion rate?
+- How many new customers did we acquire last week?
+- What is the average order value this quarter?
+
+### Path 2 — Comparison (two periods + delta)
+
+- Compare revenue this month vs last month.
+- How did conversion rate change between last 7 days and the previous 7 days?
+- Compare average order value this month vs last month by channel.
+- Did refund rate go up or down compared to last month?
+- Compare units sold by product category this quarter vs last quarter.
+
+### Path 3 — Insight / Root Cause (iterative drill-down loop)
+
+- Why did revenue drop last week?
+- Why is the cancellation rate so high this month?
+- Which channel is driving the most new customers this quarter and why?
+- Why is the conversion rate lower on mobile than desktop?
+- What is causing the bounce rate spike in the last 7 days?
+
+### Path 4 — Clarification (ambiguous intent → agent asks before executing)
+
+- Show me the data.
+- What happened last week?
+- Is performance good?
+- Tell me about our customers.
+
+### Cross-Table Drill-Down (uses `drill_down` tool across tables)
+
+- What are the top product categories by revenue this month?
+- Which brands have the highest refund rate this quarter?
+- What is the revenue breakdown by channel and customer segment?
+- Which payment methods are most popular among VIP customers?
+- What is the add_to_cart rate by device type over the last 30 days?
+
+---
+
 ## Guardrails
 
 | Guardrail | Description |
