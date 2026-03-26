@@ -1,4 +1,4 @@
-.PHONY: venv install run dev run-dev test docker-up docker-down
+.PHONY: venv install run dev run-dev test docker-up docker-down seed
 
 # ── Virtual environment ────────────────────────────────────────────
 venv:
@@ -27,3 +27,10 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+# ── Seed data ──────────────────────────────────────────────────────
+seed:
+	python3 scripts/seed_data.py
+
+seed-large:
+	python3 scripts/seed_data.py --orders 5000
