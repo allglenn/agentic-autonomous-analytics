@@ -76,7 +76,7 @@ def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
             )
 
     # ── Build SQL ──────────────────────────────────────────────────────────
-    project = getattr(settings, "google_cloud_project", "local-project")
+    project = settings.google_cloud_project
     dataset = settings.bigquery_dataset
     table = TABLE_MAP[source_table].format(project=project, dataset=dataset)
 
