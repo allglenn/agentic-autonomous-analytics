@@ -99,7 +99,7 @@ GROUP BY channel
 
 The agent never writes SQL. All queries go through the semantic layer which resolves metrics and dimensions to their source tables.
 
-### Metrics (19)
+### Metrics (17)
 
 | Group | Metrics | Source Table |
 | ----- | ------- | ------------ |
@@ -109,7 +109,7 @@ The agent never writes SQL. All queries go through the semantic layer which reso
 | Products | `units_sold`, `items_per_order` | `order_items` |
 | Traffic | `sessions`, `conversion_rate`, `bounce_rate`, `add_to_cart_rate` | `sessions` |
 
-### Dimensions (23)
+### Dimensions (21)
 
 | Group | Dimensions |
 | ----- | ---------- |
@@ -125,6 +125,21 @@ The agent never writes SQL. All queries go through the semantic layer which reso
 ### Time Ranges (12)
 
 `today` · `last_7_days` · `last_30_days` · `last_90_days` · `this_week` · `this_month` · `this_quarter` · `this_year` · `previous_7_days` · `previous_30_days` · `previous_month` · `previous_quarter`
+
+### Alias Normalisation
+
+The resolver automatically maps common LLM aliases to canonical names so the agent never errors on reasonable variants:
+
+| LLM may say | Resolves to |
+| ----------- | ----------- |
+| `marketing_channel`, `channel_name` | `channel` |
+| `device_type`, `platform` | `device` |
+| `shipping_country` | `country` |
+| `status`, `order_status_name` | `order_status` |
+| `coupon_code`, `coupon` | `promotion_code` |
+| `last_week`, `past_week` | `last_7_days` |
+| `previous_week` | `previous_7_days` |
+| `last_month`, `past_month` | `last_30_days` |
 
 ### PII Protection
 
@@ -293,16 +308,17 @@ Thought → Action → Observation → Thought → ...
 
 ## Tech Stack
 
-| Technology         | Purpose                                             |
-| ------------------ | --------------------------------------------------- |
-| Google ADK 1.27.4  | Agent orchestration (`LlmAgent`, `LoopAgent`…)      |
-| Gemini 2.5 Pro     | Planner + Critic reasoning                          |
-| Gemini 2.5 Flash   | Executor tool-call loop                             |
-| BigQuery           | Cloud data warehouse                                |
-| Semantic Layer     | Metric abstraction — no raw SQL in agents           |
-| PostgreSQL         | Persistent session state (DatabaseSessionService)   |
-| Python / FastAPI   | Backend + REST API                                  |
-| Docker / Cloud Run | Containerised deployment                            |
+| Technology         | Purpose                                                      |
+| ------------------ | ------------------------------------------------------------ |
+| Google ADK 1.27.4  | Agent orchestration (`LlmAgent`, `LoopAgent`…)               |
+| Gemini 2.5 Pro     | Planner + Critic reasoning                                   |
+| Gemini 2.5 Flash   | Executor tool-call loop                                      |
+| BigQuery           | Cloud data warehouse                                         |
+| Semantic Layer     | Metric abstraction — no raw SQL in agents                    |
+| PostgreSQL         | Persistent session state (DatabaseSessionService)            |
+| Python / FastAPI   | Backend + REST API                                           |
+| Next.js 14         | Chat frontend (port 3000)                                    |
+| Docker / Cloud Run | Containerised deployment                                     |
 
 ---
 
@@ -353,9 +369,19 @@ Agentic_aut/
 │   ├── test_semantic_layer.py
 │   └── test_guardrails.py
 │
-├── main.py                    # CLI entrypoint (asyncio)
-├── docker-compose.yml         # API + PostgreSQL
-├── Makefile                   # venv, run, dev, test, docker shortcuts
+├── frontend/                  # Next.js chat interface (port 3000)
+│   ├── app/
+│   │   ├── api/ask/route.ts   # Proxy → FastAPI /ask
+│   │   ├── page.tsx           # Chat UI
+│   │   └── layout.tsx
+│   └── Dockerfile
+│
+├── scripts/
+│   └── seed_data.py           # Generates orders, order_items, sessions
+│
+├── main.py                    # CLI entrypoint (asyncio, InMemory sessions)
+├── docker-compose.yml         # API + PostgreSQL + BigQuery emulator + frontend
+├── Makefile                   # venv, run, dev, seed, test, docker shortcuts
 ├── requirements.txt
 ├── .env.example
 └── Dockerfile
