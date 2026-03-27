@@ -92,8 +92,19 @@ GROUP BY channel
 | `run_query(metric, dimensions, time_range)` | Execute a metric query via the semantic layer |
 | `compare_periods(metric, dimensions, period_1, period_2)` | Compare a metric across two time periods |
 | `drill_down(metric, current_dimensions, new_dimension, time_range)` | Segment deeper by adding a dimension |
+| `decompose(metric, dimension, period_1, period_2)` | Show which segments drove a change — per-segment delta and % contribution to total change |
+| `correlate(metric_a, metric_b, dimension, time_range)` | Pearson correlation between two metrics across a shared dimension (e.g. do channels with more sessions also generate more revenue?) |
 | `list_metrics()` | List all available metrics |
 | `list_dimensions()` | List all available dimensions (PII excluded) |
+
+### Correlational Analytics (v1)
+
+The `decompose` and `correlate` tools provide richer context beyond single-number answers, without requiring additional data sources:
+
+- **`decompose`** — answers "what drove the change?" by computing each segment's absolute delta and % contribution to a period-over-period shift. Example: *"Which channels drove the revenue decline this quarter?"*
+- **`correlate`** — answers "are these two things related?" using Pearson correlation across dimension segments. Example: *"Do channels with more sessions also generate more orders?"*
+
+> **Limitation**: these tools measure correlation, not causation. True causal inference requires experimental data (A/B tests), marketing spend tables, or counterfactual models — planned for a future milestone.
 
 ---
 
@@ -238,11 +249,15 @@ flowchart TD
     L -->|Fetch Metric| M[run_query]
     L -->|Compare| N[compare_periods]
     L -->|Drill Down| O[drill_down]
+    L -->|Decompose| O2[decompose]
+    L -->|Correlate| O3[correlate]
 
     %% ---------------- TOOL LAYER ----------------
     M --> P[Semantic Layer<br/>Resolve metric → SQL]
     N --> P
     O --> P
+    O2 --> P
+    O3 --> P
 
     P --> Q[BigQuery Execution<br/>asyncio.wait_for · 30s timeout]
 
@@ -366,6 +381,8 @@ Agentic_aut/
 │   ├── run_query.py           # execute_sql_async — hard 30s asyncio timeout
 │   ├── compare_periods.py     # two parallel queries via asyncio.gather
 │   ├── drill_down.py
+│   ├── decompose.py           # per-segment delta + % contribution between periods
+│   ├── correlate.py           # Pearson correlation between two metrics by dimension
 │   ├── list_metrics.py
 │   └── list_dimensions.py
 │
