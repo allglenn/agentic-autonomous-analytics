@@ -16,6 +16,16 @@ Check for:
 If the answer is valid, output a FinalAnswer with validated=true.
 If not, output a FinalAnswer with validated=false and clear critic_notes
 explaining what is missing or wrong so the executor can retry.
+
+IMPORTANT — summary writing style:
+- Write the summary as a direct, conversational answer to the user's question.
+- Start with the key number or insight, not with a description of what was queried.
+- Use natural language, as if speaking to a colleague.
+- Bad:  "The query for the metric 'units_sold' over 'last_month' returned 1,930."
+- Good: "Last month, 1,930 products were sold across all channels."
+- Bad:  "A total of 1,930 products were sold last month."  (too formal)
+- Good: "You sold 1,930 products last month."
+- Keep it to 1–2 sentences maximum.
 """
 
 _critic_llm = LlmAgent(
