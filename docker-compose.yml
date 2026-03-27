@@ -34,6 +34,7 @@ services:
     environment:
       - BIGQUERY_EMULATOR_HOST=bigquery:9050
       - GOOGLE_CLOUD_PROJECT=local-project
+      - DATABASE_URL=postgresql+asyncpg://adk:adk@postgres:5432/adk_sessions
     volumes:
       - .:/app
     depends_on:
