@@ -6,7 +6,6 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from google.adk.runners import Runner
-from google.adk.events import Event, EventActions
 from google.genai.types import Content, Part
 from orchestrator.pipeline import analysis_loop
 from orchestrator.planner_runner import run_planner
@@ -92,34 +91,17 @@ async def ask(request: QuestionRequest):
                     clarification_question=plan.clarification_question,
                 )
 
-            # Step 2: intent is clear — run execution loop with injected analysis_plan.
-            session = await session_service.get_session(
+            # Step 2: intent is clear — create a fresh ADK session per request so
+            # old tool results never bleed into the new execution context.
+            # Conversation history is managed via our messages table, not ADK.
+            adk_sid = str(uuid.uuid4())
+            session = await session_service.create_session(
                 app_name="data_analyst",
                 user_id="user",
-                session_id=sid,
+                session_id=adk_sid,
+                state={"analysis_plan": plan.model_dump(), "critic_notes": ""},
             )
-            if session is None:
-                session = await session_service.create_session(
-                    app_name="data_analyst",
-                    user_id="user",
-                    session_id=sid,
-                    state={"analysis_plan": plan.model_dump(), "critic_notes": ""},
-                )
-                logger.info("[ask:%s] session_created sid=%s", req_id, sid)
-            else:
-                await session_service.append_event(
-                    session=session,
-                    event=Event(
-                        author="system",
-                        actions=EventActions(
-                            stateDelta={
-                                "analysis_plan": plan.model_dump(),
-                                "critic_notes": "",
-                            }
-                        ),
-                    ),
-                )
-                logger.info("[ask:%s] session_reused sid=%s state_updated", req_id, sid)
+            logger.info("[ask:%s] adk_session_created sid=%s", req_id, adk_sid)
 
             # Register conversation and save user message
             try:
@@ -164,25 +146,31 @@ async def ask(request: QuestionRequest):
             if final is None:
                 raise HTTPException(status_code=500, detail="No answer produced.")
 
-            # Extract text and parse FinalAnswer JSON for a clean human-readable response
+            # Extract text from final event
             raw_text = " ".join(
                 p.text for p in final.parts if getattr(p, "text", None)
             ).strip()
 
-            answer_text = raw_text
+            # Try to parse as FinalAnswer for structured response
             try:
                 fa = FinalAnswer.model_validate_json(raw_text)
-                lines = [fa.summary]
-                if fa.findings:
-                    lines.append("")
-                    lines.extend(f"• {f}" for f in fa.findings)
-                answer_text = "\n".join(lines)
+                # Save summary to messages table for clean history display
+                try:
+                    await add_message(sid, "assistant", fa.summary)
+                except Exception:
+                    pass
+                logger.info(
+                    "[ask:%s] success total_elapsed=%.2fs",
+                    req_id,
+                    time.monotonic() - ask_started,
+                )
+                return {"answer": fa.model_dump()}
             except Exception:
-                pass  # Not a FinalAnswer JSON — use raw text as-is
+                pass  # Not a FinalAnswer — return raw text
 
             try:
-                if answer_text:
-                    await add_message(sid, "assistant", answer_text)
+                if raw_text:
+                    await add_message(sid, "assistant", raw_text)
             except Exception:
                 pass
 
@@ -191,7 +179,7 @@ async def ask(request: QuestionRequest):
                 req_id,
                 time.monotonic() - ask_started,
             )
-            return {"answer": answer_text}
+            return {"answer": raw_text}
     except TimeoutError:
         logger.warning(
             "[ask:%s] timeout total_elapsed=%.2fs limit=%ss",
