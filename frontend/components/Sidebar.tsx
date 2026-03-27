@@ -26,6 +26,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState<string>("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -58,9 +59,12 @@ export default function Sidebar({
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm("Delete this conversation?")) {
-      onDeleteSession(id);
-    }
+    setConfirmDeleteId(id);
+  };
+
+  const confirmDelete = () => {
+    if (confirmDeleteId) onDeleteSession(confirmDeleteId);
+    setConfirmDeleteId(null);
   };
 
   return (
@@ -159,6 +163,34 @@ export default function Sidebar({
           Allinsoft Ware
         </p>
       </div>
+
+      {/* Delete confirmation modal */}
+      {confirmDeleteId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-[#161616] border border-[#2A2A2A] w-80 p-6 shadow-2xl">
+            <p className="text-[10px] tracking-widest uppercase text-[#6B7280] font-medium mb-3">
+              Confirm deletion
+            </p>
+            <p className="text-sm text-[#E5E7EB] mb-6 leading-relaxed">
+              This conversation will be permanently deleted and cannot be recovered.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                className="flex-1 px-4 py-2 text-sm text-[#9CA3AF] border border-[#2A2A2A] hover:border-[#4B5563] hover:text-[#E5E7EB] transition-colors rounded-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="flex-1 px-4 py-2 text-sm text-white bg-[#EF4444] hover:bg-[#DC2626] transition-colors rounded-sm"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
