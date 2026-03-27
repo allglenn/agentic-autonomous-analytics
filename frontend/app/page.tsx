@@ -1,11 +1,17 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Sidebar from "@/components/Sidebar";
 
 interface Message {
   id: string;
   role: "user" | "assistant" | "error";
   content: string;
+}
+
+interface SessionMeta {
+  session_id: string;
+  title: string;
 }
 
 type ApiResponse =
@@ -50,7 +56,9 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [sessionId] = useState<string>(() => crypto.randomUUID());
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string>(() => crypto.randomUUID());
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -68,9 +76,65 @@ export default function ChatPage() {
     el.style.height = Math.min(el.scrollHeight, 140) + "px";
   }, []);
 
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch("/api/sessions");
+      const data = await res.json();
+      setSessions(data.sessions || []);
+    } catch {}
+  }, []);
+
+  // Fetch sessions on mount
+  useEffect(() => {
+    fetchSessions();
+  }, []);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     resizeTextarea();
+  };
+
+  const handleNewChat = () => {
+    setCurrentSessionId(crypto.randomUUID());
+    setMessages([]);
+    textareaRef.current?.focus();
+  };
+
+  const handleSelectSession = async (id: string) => {
+    setCurrentSessionId(id);
+    setMessages([]);
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/sessions/${id}`);
+      const data = await res.json();
+      const msgs: Message[] = (data.messages || []).map((m: { role: string; content: string }) => ({
+        id: crypto.randomUUID(),
+        role: m.role === "user" ? "user" : ("assistant" as const),
+        content: m.content,
+      }));
+      setMessages(msgs);
+    } catch {
+      setMessages([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+    if (id === currentSessionId) handleNewChat();
+    setSessions((prev) => prev.filter((s) => s.session_id !== id));
+  };
+
+  const handleRenameSession = async (id: string, title: string) => {
+    await fetch(`/api/sessions/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    setSessions((prev) =>
+      prev.map((s) => (s.session_id === id ? { ...s, title } : s))
+    );
   };
 
   const submitMessage = useCallback(
@@ -97,7 +161,7 @@ export default function ChatPage() {
         const res = await fetch("/api/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: trimmed, session_id: sessionId }),
+          body: JSON.stringify({ question: trimmed, session_id: currentSessionId }),
         });
 
         const data: ApiResponse = await res.json();
@@ -111,6 +175,7 @@ export default function ChatPage() {
         };
 
         setMessages((prev) => [...prev, assistantMessage]);
+        fetchSessions();
       } catch {
         setMessages((prev) => [
           ...prev,
@@ -124,7 +189,7 @@ export default function ChatPage() {
         setLoading(false);
       }
     },
-    [loading, sessionId]
+    [loading, currentSessionId, fetchSessions]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -146,70 +211,122 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#111111]">
-      {/* Header */}
-      <header className="flex items-center justify-between px-8 py-4 bg-[#111111] border-b border-[#1E1E1E] flex-shrink-0">
-        <div>
-          <p className="text-xs tracking-widest uppercase text-[#6B7280] font-medium">
-            Allinsoft ware
-          </p>
-          <h1 className="text-base font-semibold text-[#E5E7EB] mt-0.5">
-            AI Data Analyst
-          </h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#1A56DB] opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#1A56DB]" />
-          </span>
-          <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium">
-            Live
-          </span>
-        </div>
-      </header>
+    <div className="flex h-full bg-[#111111]">
+      {/* Sidebar toggle button — visible when sidebar closed */}
+      {!sidebarOpen && (
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="absolute top-4 left-4 z-10 p-2 text-[#6B7280] hover:text-[#E5E7EB] transition-colors"
+        >
+          ☰
+        </button>
+      )}
 
-      {/* Messages area */}
-      <main className="flex-1 overflow-y-auto bg-[#0D0D0D] px-6 py-8">
-        {messages.length === 0 && !loading ? (
-          /* Empty state */
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <p className="text-xs tracking-widest uppercase text-[#6B7280] font-medium mb-4">
+      {/* Sidebar */}
+      {sidebarOpen && (
+        <div className="relative flex-shrink-0">
+          <Sidebar
+            sessions={sessions}
+            currentSessionId={currentSessionId}
+            onNewChat={handleNewChat}
+            onSelectSession={handleSelectSession}
+            onDeleteSession={handleDeleteSession}
+            onRenameSession={handleRenameSession}
+          />
+          {/* Collapse button */}
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="absolute top-3 right-3 text-[#6B7280] hover:text-[#E5E7EB] text-xs transition-colors"
+            title="Collapse sidebar"
+          >
+            ←
+          </button>
+        </div>
+      )}
+
+      {/* Main chat area */}
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* Header */}
+        <header className="flex items-center justify-between px-8 py-4 bg-[#111111] border-b border-[#1E1E1E] flex-shrink-0">
+          <div>
+            <p className="text-xs tracking-widest uppercase text-[#6B7280] font-medium">
+              Allinsoft ware
+            </p>
+            <h1 className="text-base font-semibold text-[#E5E7EB] mt-0.5">
               AI Data Analyst
-            </p>
-            <h2 className="text-2xl font-semibold text-[#E5E7EB] mb-3">
-              What do you want to know?
-            </h2>
-            <p className="text-sm text-[#6B7280] mb-10 max-w-sm">
-              Ask a question about your business data. The analyst will query
-              your data warehouse and return insights.
-            </p>
-            <div className="flex flex-col gap-2 w-full max-w-md">
-              {SUGGESTIONS.map((suggestion) => (
-                <button
-                  key={suggestion}
-                  onClick={() => handleSuggestion(suggestion)}
-                  className="text-left text-sm text-[#E5E7EB] bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm hover:border-[#2A2A2A] hover:bg-[#1a1a1a] transition-colors duration-150"
-                >
-                  {suggestion}
-                </button>
-              ))}
-            </div>
+            </h1>
           </div>
-        ) : (
-          /* Message list */
-          <div className="flex flex-col gap-6 max-w-4xl mx-auto">
-            {messages.map((message) => {
-              if (message.role === "user") {
-                return (
-                  <div key={message.id} className="flex justify-end">
-                    <div className="max-w-[72%] bg-[#1A56DB] text-white px-4 py-3 rounded-sm text-sm leading-relaxed">
-                      {message.content}
-                    </div>
-                  </div>
-                );
-              }
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#1A56DB] opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#1A56DB]" />
+            </span>
+            <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium">
+              Live
+            </span>
+          </div>
+        </header>
 
-              if (message.role === "error") {
+        {/* Messages area */}
+        <main className="flex-1 overflow-y-auto bg-[#0D0D0D] px-6 py-8">
+          {messages.length === 0 && !loading ? (
+            /* Empty state */
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <p className="text-xs tracking-widest uppercase text-[#6B7280] font-medium mb-4">
+                AI Data Analyst
+              </p>
+              <h2 className="text-2xl font-semibold text-[#E5E7EB] mb-3">
+                What do you want to know?
+              </h2>
+              <p className="text-sm text-[#6B7280] mb-10 max-w-sm">
+                Ask a question about your business data. The analyst will query
+                your data warehouse and return insights.
+              </p>
+              <div className="flex flex-col gap-2 w-full max-w-md">
+                {SUGGESTIONS.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    onClick={() => handleSuggestion(suggestion)}
+                    className="text-left text-sm text-[#E5E7EB] bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm hover:border-[#2A2A2A] hover:bg-[#1a1a1a] transition-colors duration-150"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* Message list */
+            <div className="flex flex-col gap-6 max-w-4xl mx-auto">
+              {messages.map((message) => {
+                if (message.role === "user") {
+                  return (
+                    <div key={message.id} className="flex justify-end">
+                      <div className="max-w-[72%] bg-[#1A56DB] text-white px-4 py-3 rounded-sm text-sm leading-relaxed">
+                        {message.content}
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (message.role === "error") {
+                  return (
+                    <div key={message.id} className="flex items-start gap-3">
+                      <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
+                        A
+                      </div>
+                      <div className="flex flex-col gap-1 max-w-[78%]">
+                        <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
+                          Error
+                        </span>
+                        <div className="bg-[#1C1010] border border-[#3D1515] px-4 py-3 rounded-sm text-sm text-[#FCA5A5] leading-relaxed whitespace-pre-wrap">
+                          {message.content}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // assistant
                 return (
                   <div key={message.id} className="flex items-start gap-3">
                     <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
@@ -217,97 +334,80 @@ export default function ChatPage() {
                     </div>
                     <div className="flex flex-col gap-1 max-w-[78%]">
                       <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
-                        Error
+                        Analyst
                       </span>
-                      <div className="bg-[#1C1010] border border-[#3D1515] px-4 py-3 rounded-sm text-sm text-[#FCA5A5] leading-relaxed whitespace-pre-wrap">
+                      <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm text-sm text-[#E5E7EB] leading-relaxed whitespace-pre-wrap">
                         {message.content}
                       </div>
                     </div>
                   </div>
                 );
-              }
+              })}
 
-              // assistant
-              return (
-                <div key={message.id} className="flex items-start gap-3">
+              {/* Loading state */}
+              {loading && (
+                <div className="flex items-start gap-3">
                   <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
                     A
                   </div>
-                  <div className="flex flex-col gap-1 max-w-[78%]">
+                  <div className="flex flex-col gap-1">
                     <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
                       Analyst
                     </span>
-                    <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm text-sm text-[#E5E7EB] leading-relaxed whitespace-pre-wrap">
-                      {message.content}
+                    <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
+                          style={{ animationDelay: "0ms" }}
+                        />
+                        <span
+                          className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
+                          style={{ animationDelay: "150ms" }}
+                        />
+                        <span
+                          className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
+                          style={{ animationDelay: "300ms" }}
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
-              );
-            })}
+              )}
 
-            {/* Loading state */}
-            {loading && (
-              <div className="flex items-start gap-3">
-                <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
-                  A
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
-                    Analyst
-                  </span>
-                  <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
-                        style={{ animationDelay: "0ms" }}
-                      />
-                      <span
-                        className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
-                        style={{ animationDelay: "150ms" }}
-                      />
-                      <span
-                        className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
-                        style={{ animationDelay: "300ms" }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </main>
 
-            <div ref={bottomRef} />
-          </div>
-        )}
-      </main>
-
-      {/* Input area */}
-      <div className="bg-[#0D0D0D] border-t border-[#1E1E1E] px-6 pb-6 pt-4 flex-shrink-0">
-        <form
-          onSubmit={handleSubmit}
-          className="flex gap-3 items-end max-w-4xl mx-auto"
-        >
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask a question about your data..."
-            rows={1}
-            disabled={loading}
-            className="flex-1 bg-[#111111] border border-[#1E1E1E] text-[#E5E7EB] placeholder-[#4B5563] px-4 py-3 rounded-sm resize-none text-sm leading-relaxed focus:outline-none focus:border-[#1A56DB] transition-colors duration-150 disabled:opacity-50"
-            style={{ minHeight: "48px", maxHeight: "140px" }}
-          />
-          <button
-            type="submit"
-            disabled={loading || !input.trim()}
-            className="flex-shrink-0 bg-[#1A56DB] hover:bg-[#1d4ed8] text-white px-5 py-3 rounded-sm text-sm font-medium transition-colors duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
+        {/* Input area */}
+        <div className="bg-[#0D0D0D] border-t border-[#1E1E1E] px-6 pb-6 pt-4 flex-shrink-0">
+          <form
+            onSubmit={handleSubmit}
+            className="flex gap-3 items-end max-w-4xl mx-auto"
           >
-            Send
-          </button>
-        </form>
-        <p className="text-center text-[10px] tracking-widest uppercase text-[#374151] mt-3 max-w-4xl mx-auto">
-          Allinsoft ware &middot; AI Analytics &middot; Powered by Google ADK
-        </p>
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask a question about your data..."
+              rows={1}
+              disabled={loading}
+              className="flex-1 bg-[#111111] border border-[#1E1E1E] text-[#E5E7EB] placeholder-[#4B5563] px-4 py-3 rounded-sm resize-none text-sm leading-relaxed focus:outline-none focus:border-[#1A56DB] transition-colors duration-150 disabled:opacity-50"
+              style={{ minHeight: "48px", maxHeight: "140px" }}
+            />
+            <button
+              type="submit"
+              disabled={loading || !input.trim()}
+              className="flex-shrink-0 bg-[#1A56DB] hover:bg-[#1d4ed8] text-white px-5 py-3 rounded-sm text-sm font-medium transition-colors duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Send
+            </button>
+          </form>
+          <p className="text-center text-[10px] tracking-widest uppercase text-[#374151] mt-3 max-w-4xl mx-auto">
+            Allinsoft ware &middot; AI Analytics &middot; Powered by Google ADK
+          </p>
+        </div>
       </div>
     </div>
   );
