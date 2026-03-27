@@ -1,10 +1,10 @@
 """
-Self-managed conversation store.
-Tracks conversations independently of ADK sessions.
+Self-managed conversation and message store.
+Tracks conversations and their messages independently of ADK sessions.
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Text, select, delete
+from sqlalchemy import Column, String, DateTime, Text, Integer, select, delete, ForeignKey
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from config.settings import settings
@@ -22,6 +22,15 @@ class Conversation(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class Message(Base):
+    __tablename__ = "messages"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String(20), nullable=False)   # "user" | "assistant"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 _engine = create_async_engine(settings.database_url, echo=False)
 _Session = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -30,6 +39,8 @@ async def init_db():
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+
+# ── Conversations ────────────────────────────────────────────────────────────
 
 async def create_conversation(session_id: str, title: str) -> Conversation:
     async with _Session() as db:
@@ -72,3 +83,29 @@ async def delete_conversation(session_id: str) -> bool:
         result = await db.execute(delete(Conversation).where(Conversation.id == session_id))
         await db.commit()
         return result.rowcount > 0
+
+
+# ── Messages ─────────────────────────────────────────────────────────────────
+
+async def add_message(conversation_id: str, role: str, content: str) -> Message:
+    async with _Session() as db:
+        msg = Message(conversation_id=conversation_id, role=role, content=content)
+        db.add(msg)
+        # Bump conversation updated_at so it floats to top of sidebar
+        result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+        conv = result.scalar_one_or_none()
+        if conv:
+            conv.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(msg)
+        return msg
+
+
+async def get_messages(conversation_id: str) -> list[Message]:
+    async with _Session() as db:
+        result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.id)
+        )
+        return result.scalars().all()
