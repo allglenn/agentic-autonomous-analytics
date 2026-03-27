@@ -1,4 +1,5 @@
 import json
+import uuid
 from google.adk.runners import Runner
 from google.genai.types import Content, Part
 from agents.planner import planner_agent
@@ -17,14 +18,17 @@ async def run_planner(question: str) -> AnalysisPlan:
     session = await session_service.create_session(
         app_name="planner",
         user_id="user",
-        session_id=question[:40],
+        session_id=str(uuid.uuid4()),
     )
     message = Content(role="user", parts=[Part(text=question)])
-    events = list(_runner.run(
+    events = []
+    async for event in _runner.run_async(
         user_id="user",
         session_id=session.id,
         new_message=message,
-    ))
+    ):
+        events.append(event)
+
     raw = next(
         (e.content.parts[0].text for e in reversed(events) if e.content),
         None,
