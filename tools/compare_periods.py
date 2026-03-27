@@ -1,9 +1,10 @@
+import asyncio
 from typing import Any, Dict, List
 from semantic_layer.resolver import resolve_query
 from bigquery.executor import execute_sql
 
 
-def compare_periods(
+async def compare_periods(
     metric: str,
     dimensions: List[str],
     period_1: str,
@@ -24,8 +25,10 @@ def compare_periods(
     sql_1 = resolve_query(metric=metric, dimensions=dimensions, time_range=period_1)
     sql_2 = resolve_query(metric=metric, dimensions=dimensions, time_range=period_2)
 
-    rows_1 = execute_sql(sql_1)
-    rows_2 = execute_sql(sql_2)
+    rows_1, rows_2 = await asyncio.gather(
+        asyncio.to_thread(execute_sql, sql_1),
+        asyncio.to_thread(execute_sql, sql_2),
+    )
 
     return {
         "metric": metric,

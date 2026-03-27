@@ -1,9 +1,10 @@
+import asyncio
 from typing import Any, Dict, List
 from semantic_layer.resolver import resolve_query
 from bigquery.executor import execute_sql
 
 
-def drill_down(
+async def drill_down(
     metric: str,
     current_dimensions: List[str],
     new_dimension: str,
@@ -23,7 +24,7 @@ def drill_down(
     """
     dimensions = current_dimensions + [new_dimension]
     sql = resolve_query(metric=metric, dimensions=dimensions, time_range=time_range)
-    rows = execute_sql(sql)
+    rows = await asyncio.to_thread(execute_sql, sql)
     return {
         "metric": metric,
         "dimensions": dimensions,

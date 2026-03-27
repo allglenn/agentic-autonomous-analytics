@@ -96,6 +96,26 @@ TIME_RANGE_ALIASES = {
 }
 
 
+METRIC_ALIASES = {
+    # LLM commonly prefixes metrics with "total_" or "avg_"
+    "total_revenue": "revenue",
+    "total_orders": "orders",
+    "total_sessions": "sessions",
+    "total_units": "units_sold",
+    "total_units_sold": "units_sold",
+    "avg_order_value": "average_order_value",
+    "aov": "average_order_value",
+    "total_shipping": "shipping_cost",
+    "total_shipping_cost": "shipping_cost",
+    "total_refunds": "refund_amount",
+    "total_refund": "refund_amount",
+    "total_net_revenue": "net_revenue",
+    "num_customers": "unique_customers",
+    "customer_count": "unique_customers",
+    "new_customer_count": "new_customers",
+}
+
+
 def _resolve_join_query(metric, metric_def, dimensions, dim_defs,
                         source_table, date_filter, project, dataset) -> str:
     """Generate a JOIN query between orders and order_items on order_id."""
@@ -137,7 +157,10 @@ def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
     """Translate a semantic metric request into a BigQuery SQL string."""
 
     # ── Normalise aliases ──────────────────────────────────────────────────
+    # Normalise spaces/hyphens to underscores (e.g. "this month" → "this_month")
+    time_range = time_range.strip().lower().replace(" ", "_").replace("-", "_")
     time_range = TIME_RANGE_ALIASES.get(time_range, time_range)
+    metric = METRIC_ALIASES.get(metric, metric)
     dimensions = [DIMENSION_ALIASES.get(d, d) for d in dimensions]
 
     # ── Guardrail checks ───────────────────────────────────────────────────

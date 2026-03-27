@@ -1,9 +1,10 @@
+import asyncio
 from typing import Any, Dict, List
 from semantic_layer.resolver import resolve_query
 from bigquery.executor import execute_sql
 
 
-def run_query(metric: str, dimensions: List[str], time_range: str) -> Dict[str, Any]:
+async def run_query(metric: str, dimensions: List[str], time_range: str) -> Dict[str, Any]:
     """
     Run a metric query via the semantic layer.
 
@@ -16,7 +17,7 @@ def run_query(metric: str, dimensions: List[str], time_range: str) -> Dict[str, 
         Dictionary with metric, dimensions, time_range, and rows.
     """
     sql = resolve_query(metric=metric, dimensions=dimensions, time_range=time_range)
-    rows = execute_sql(sql)
+    rows = await asyncio.to_thread(execute_sql, sql)
     return {
         "metric": metric,
         "dimensions": dimensions,
