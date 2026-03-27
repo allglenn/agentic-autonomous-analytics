@@ -121,9 +121,14 @@ export default function ChatPage() {
   };
 
   const handleDeleteSession = async (id: string) => {
-    await fetch(`/api/sessions/${id}`, { method: "DELETE" });
-    if (id === currentSessionId) handleNewChat();
-    setSessions((prev) => prev.filter((s) => s.session_id !== id));
+    const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+    if (res.ok) {
+      if (id === currentSessionId) handleNewChat();
+      setSessions((prev) => prev.filter((s) => s.session_id !== id));
+    } else {
+      // Refresh from server so UI matches actual DB state
+      fetchSessions();
+    }
   };
 
   const handleRenameSession = async (id: string, title: string) => {
