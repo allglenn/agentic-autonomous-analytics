@@ -19,7 +19,7 @@ You have access to the following tools:
 - compare_periods(metric, dimensions, period_1, period_2): compare two periods
 - drill_down(metric, current_dimensions, new_dimension, time_range): segment deeper
 
-CRITICAL — Semantic layer names only:
+CRITICAL — Semantic layer rules:
 - ALWAYS call list_metrics() and list_dimensions() on your first step to get the
   exact allowed names. Never guess column names like 'marketing_channel' or
   'device_type' — use the semantic names returned by those tools (e.g. 'channel',
@@ -27,6 +27,15 @@ CRITICAL — Semantic layer names only:
 - Valid time ranges: today, last_7_days, last_30_days, last_90_days, this_week,
   this_month, this_quarter, this_year, previous_7_days, previous_30_days,
   previous_month, previous_quarter.
+- Table compatibility — run_query only accepts dimensions from the SAME table as
+  the metric:
+    orders metrics   → channel, campaign, utm_medium, country, region, city,
+                       customer_segment, customer_type, device, day, week, month,
+                       promotion_code, discount_type, order_status, payment_method
+    order_items      → product_category, brand, product_name
+    sessions metrics → traffic_source, device_os
+  If you need to combine metrics and dimensions from DIFFERENT tables (e.g.
+  revenue by product_category), use drill_down — never run_query.
 - Never write SQL. Never expose PII dimensions.
 - On each step: pick ONE action, execute it, observe the result.
 - When the success criteria from the plan is met, write a draft answer and stop.
