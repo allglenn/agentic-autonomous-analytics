@@ -9,7 +9,7 @@ An agentic AI system that explores business data using natural language, powered
 - **Semantic Layer** — No raw SQL in agents, metric abstraction layer
 - **ReAct Reasoning** — Thought → Action → Observation (enforced by `LoopAgent`)
 - **Planner → Executor → CriticGate** — ADK-native multi-agent pipeline
-- **PostgreSQL** — Persistent session management via `DatabaseSessionService`
+- **PostgreSQL** — ADK session execution state + self-managed conversations & messages tables
 
 ---
 
@@ -41,7 +41,7 @@ Example output:
 
 Executes the plan using iterative reasoning:
 
-```
+```text
 Thought → Action → Observation → Thought → ...
 ```
 
@@ -186,17 +186,26 @@ The following fields are permanently blocked from the agent:
 ```mermaid
 flowchart TD
 
+    %% ---------------- CONVERSATION STORE ----------------
+    DB[(PostgreSQL<br/>conversations · messages)]
+
     %% ---------------- USER ----------------
-    A[User Question] --> B[Planner Agent<br/>LlmAgent · gemini-2.5-pro]
+    A[User Question] --> PRE[Fetch prior messages<br/>from messages table]
+    PRE --> DB
+    DB -->|last 6 turns| B
 
     %% ---------------- PLANNER ----------------
+    B[Planner Agent<br/>LlmAgent · gemini-2.5-pro<br/>question + conversation context]
+
     B --> C[LLM Reasoning<br/>Classify intent + metrics + dimensions]
 
     C --> CL{Intent Clear?}
 
     %% ---------------- CLARIFICATION SHORTCUT ----------------
     CL -->|No| CLQ[Clarification Question<br/>Ask user to refine]
-    CLQ --> AA
+    CLQ --> SAVECL[Save Q&A to messages table]
+    SAVECL --> DB
+    SAVECL --> AA
 
     %% ---------------- ANALYSIS PATH ----------------
     CL -->|Yes| D{Intent Type}
@@ -209,7 +218,8 @@ flowchart TD
     F --> H
     G --> H
 
-    H --> HS[(state.analysis_plan)]
+    %% ---------------- FRESH ADK SESSION PER REQUEST ----------------
+    H --> HS[Fresh ADK Session<br/>state.analysis_plan injected]
 
     %% ---------------- OUTER LOOP ----------------
     HS --> AL[analysis_loop<br/>LoopAgent · max 3 retries]
@@ -232,7 +242,7 @@ flowchart TD
     N --> P
     O --> P
 
-    P --> Q[BigQuery Execution]
+    P --> Q[BigQuery Execution<br/>asyncio.wait_for · 30s timeout]
 
     Q --> R[Observation · Query Result]
 
@@ -258,28 +268,42 @@ flowchart TD
 
     X -->|Yes| XY[escalate=True<br/>Break analysis_loop]
 
-    XY --> Z[Final Answer]
+    XY --> Z[Parse FinalAnswer JSON<br/>summary · findings · evidence · confidence]
 
-    %% ---------------- RESPONSE ----------------
-    Z --> AA[Return to User]
+    %% ---------------- SAVE & RESPOND ----------------
+    Z --> SAVE[Save summary to messages table]
+    SAVE --> DB
+    SAVE --> AA[Return structured FinalAnswer to User]
 ```
 
 ### How to Read This Diagram
 
-#### 1. Planner (top)
+#### 1. Conversation Store (PostgreSQL)
 
-- Classifies the request
-- Builds a structured execution plan
+All user questions and final answers are stored in a self-managed `messages` table.
+The last 6 messages are fetched before each planner call so follow-up questions
+("last month", "that metric", "yes") resolve correctly against prior turns.
+
+#### 2. Planner (top)
+
+- Receives the current question **plus conversation history** as context
+- Classifies the request and builds a structured execution plan
 - Decides the analysis path: single value / comparison / insight
-- If the intent is ambiguous or references unknown metrics → returns a **clarification question** directly to the user, skipping the executor entirely
+- If the intent is ambiguous → returns a **clarification question**, saves the exchange to the messages table, and skips the executor
 
-#### 2. analysis_loop — Outer LoopAgent (max 3 retries)
+#### 3. Fresh ADK Session per Request
+
+A new ADK session is created for every request with the `analysis_plan` injected as initial state.
+This prevents old tool results from prior turns bleeding into the new execution context.
+Conversation memory is provided by the messages table, not by ADK session history.
+
+#### 4. analysis_loop — Outer LoopAgent (max 3 retries)
 
 Wraps the Executor and CriticGate. Each iteration is one full attempt:
 Executor runs → Critic validates → retry if needed.
 Stops when `CriticGate` escalates (`validated=True`) or retries are exhausted.
 
-#### 3. Executor — Inner ReAct LoopAgent (max 10 steps)
+#### 5. Executor — Inner ReAct LoopAgent (max 10 steps)
 
 The core reasoning engine (`gemini-2.5-flash`):
 
@@ -291,18 +315,23 @@ Thought → Action → Observation → Thought → ...
 - Keeps querying and drilling down until success criteria are met
 - Writes `state.draft_answer` when done
 
-#### 4. Tool Layer — Semantic Abstraction
+#### 6. Tool Layer — Semantic Abstraction
 
 - The Semantic Layer translates metric requests into SQL
-- BigQuery executes the generated query
+- BigQuery executes the query via `asyncio.wait_for` with a hard 30s timeout
 - The agent never writes or touches raw SQL directly
 
-#### 5. CriticGate — Custom BaseAgent (bottom)
+#### 7. CriticGate — Custom BaseAgent (bottom)
 
 - Runs the critic `LlmAgent` (`gemini-2.5-pro`) to validate correctness and completeness
-- Reads `state.final_answer` (a dict) after the LlmAgent writes it
 - `validated=True` → yields `Event(escalate=True)` → `analysis_loop` stops
 - `validated=False` → writes `critic_notes` to state → loop retries with executor
+
+#### 8. FinalAnswer & Response
+
+The `FinalAnswer` JSON (summary, findings, evidence, confidence, validated) is parsed from the last ADK event.
+Only the `summary` is saved to the messages table for clean history.
+The full structured object is returned to the frontend for rich display.
 
 ---
 
@@ -315,7 +344,7 @@ Thought → Action → Observation → Thought → ...
 | Gemini 2.5 Flash   | Executor tool-call loop                                      |
 | BigQuery           | Cloud data warehouse                                         |
 | Semantic Layer     | Metric abstraction — no raw SQL in agents                    |
-| PostgreSQL         | Persistent session state (DatabaseSessionService)            |
+| PostgreSQL         | ADK session state + conversations & messages tables          |
 | Python / FastAPI   | Backend + REST API                                           |
 | Next.js 14         | Chat frontend (port 3000)                                    |
 | Docker / Cloud Run | Containerised deployment                                     |
@@ -324,7 +353,7 @@ Thought → Action → Observation → Thought → ...
 
 ## Project Structure
 
-```
+```text
 Agentic_aut/
 ├── agents/
 │   ├── planner.py             # LlmAgent — classifies intent, outputs AnalysisPlan
@@ -332,8 +361,8 @@ Agentic_aut/
 │   └── critic.py              # CriticGate (BaseAgent) — validates, escalates on success
 │
 ├── tools/                     # ADK tool functions (no SQL, semantic layer only)
-│   ├── run_query.py
-│   ├── compare_periods.py
+│   ├── run_query.py           # execute_sql_async — hard 30s asyncio timeout
+│   ├── compare_periods.py     # two parallel queries via asyncio.gather
 │   ├── drill_down.py
 │   ├── list_metrics.py
 │   └── list_dimensions.py
@@ -344,16 +373,19 @@ Agentic_aut/
 │   └── resolver.py            # Translates metric + dims → BigQuery SQL
 │
 ├── bigquery/
-│   ├── client.py              # Singleton BQ client
-│   └── executor.py            # Executes SQL, returns rows
+│   ├── client.py              # Singleton BQ client (emulator-aware)
+│   └── executor.py            # execute_sql (sync) + execute_sql_async (wait_for wrapper)
 │
 ├── orchestrator/
-│   ├── pipeline.py            # SequentialAgent([planner, analysis_loop])
-│   └── planner_runner.py      # Lightweight runner — checks intent before full pipeline
+│   ├── pipeline.py            # analysis_loop LoopAgent (executor + critic)
+│   └── planner_runner.py      # run_planner(question, history) — fresh session per call
 │
 ├── api/
-│   ├── main.py                # FastAPI app entrypoint
-│   └── routes.py              # POST /ask, GET /metrics, GET /dimensions
+│   ├── main.py                # FastAPI app + lifespan (init_db, auto-seed BQ emulator)
+│   └── routes.py              # POST /ask · GET|DELETE|PATCH /sessions · GET /sessions/{id}/messages
+│
+├── db/
+│   └── conversations.py       # conversations + messages tables (SQLAlchemy async)
 │
 ├── models/                    # Pydantic schemas shared across all layers
 │   ├── plan.py                # AnalysisPlan, IntentType (incl. clarification_needed)
@@ -369,15 +401,18 @@ Agentic_aut/
 │   ├── test_semantic_layer.py
 │   └── test_guardrails.py
 │
-├── frontend/                  # Next.js chat interface (port 3000)
+├── frontend/                  # Next.js 14 chat interface (port 3000)
 │   ├── app/
-│   │   ├── api/ask/route.ts   # Proxy → FastAPI /ask
-│   │   ├── page.tsx           # Chat UI
+│   │   ├── api/ask/route.ts          # Proxy → FastAPI /ask
+│   │   ├── api/sessions/route.ts     # GET /api/sessions (force-dynamic)
+│   │   ├── api/sessions/[id]/route.ts # GET · DELETE · PATCH per session
+│   │   ├── page.tsx                  # Chat UI — FinalAnswer structured card renderer
 │   │   └── layout.tsx
-│   └── Dockerfile
+│   └── components/
+│       └── Sidebar.tsx               # Conversation history sidebar
 │
 ├── scripts/
-│   └── seed_data.py           # Generates orders, order_items, sessions
+│   └── seed_data.py           # Generates orders, order_items (with created_at), sessions
 │
 ├── main.py                    # CLI entrypoint (asyncio, InMemory sessions)
 ├── docker-compose.yml         # API + PostgreSQL + BigQuery emulator + frontend
@@ -448,7 +483,7 @@ python3 scripts/seed_data.py --orders 1000
 | Table | Rows (default) | Description |
 | ----- | -------------- | ----------- |
 | `orders` | 1 000 | Orders with channel, status, payment, geography, discount |
-| `order_items` | ~2 500 | Line items per order with product, brand, category, price |
+| `order_items` | ~3 067 | Line items per order with product, brand, category, price, created_at |
 | `sessions` | 3 500 | Web sessions — 1 000 converted, 2 500 non-converted |
 
 All columns match the semantic layer schema so every metric and dimension works immediately after seeding.
@@ -544,7 +579,7 @@ These questions are designed to exercise every path in the architecture diagram.
 ## Roadmap
 
 - [ ] Add caching layer (Redis / Firestore)
-- [ ] Add memory (conversation context)
+- [x] Add memory (conversation context via messages table)
 - [ ] Add alerting (proactive insights)
 - [ ] Add dashboard integration (Looker / Streamlit)
 - [ ] Multi-tenant SaaS support
