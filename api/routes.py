@@ -43,11 +43,18 @@ async def ask(request: QuestionRequest):
             )
 
         # Step 2: intent is clear — run the full pipeline
-        session = await session_service.create_session(
+        sid = request.session_id or str(uuid.uuid4())
+        session = await session_service.get_session(
             app_name="data_analyst",
             user_id="user",
-            session_id=request.session_id or str(uuid.uuid4()),
+            session_id=sid,
         )
+        if session is None:
+            session = await session_service.create_session(
+                app_name="data_analyst",
+                user_id="user",
+                session_id=sid,
+            )
         message = Content(role="user", parts=[Part(text=request.question)])
         events = []
         async for event in runner.run_async(
