@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from faker import Faker
 from google.cloud import bigquery
 from google.api_core.client_options import ClientOptions
+from google.auth.credentials import AnonymousCredentials
 
 fake = Faker()
 random.seed(42)
@@ -61,7 +62,8 @@ PRODUCTS = {
 def get_client() -> bigquery.Client:
     if EMULATOR:
         opts = ClientOptions(api_endpoint=f"http://{EMULATOR}")
-        return bigquery.Client(project=PROJECT, client_options=opts)
+        return bigquery.Client(project=PROJECT, client_options=opts,
+                               credentials=AnonymousCredentials())
     return bigquery.Client(project=PROJECT)
 
 
