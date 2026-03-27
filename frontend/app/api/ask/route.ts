@@ -1,29 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
+import { request as undiciRequest } from "undici";
 
-export const maxDuration = 600; // seconds — required for long-running LLM responses
+export const maxDuration = 600; // seconds
 
 const API_URL = process.env.API_URL || "http://api:8080";
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   let body: unknown;
   try {
-    body = await request.json();
+    body = await req.json();
   } catch {
     return NextResponse.json({ detail: "Invalid request body." }, { status: 400 });
   }
 
   try {
-    const response = await fetch(`${API_URL}/ask`, {
+    // Use undici directly so we can set headersTimeout/bodyTimeout independently.
+    // The global fetch in Node.js 18/20 hardcodes headersTimeout=300 s which is
+    // too short for a multi-step LLM pipeline.
+    const { statusCode, body: responseBody } = await undiciRequest(`${API_URL}/ask`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(600_000), // 10 min — LLM pipeline can take 60–120 s
+      headersTimeout: 600_000, // 10 min
+      bodyTimeout: 600_000,
     });
 
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
+    const data = await responseBody.json();
+    return NextResponse.json(data, { status: statusCode });
   } catch (error) {
     console.error("Error connecting to analytics API:", error);
     return NextResponse.json(

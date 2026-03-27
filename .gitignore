@@ -20,9 +20,12 @@ ENV/
 .env
 *.env.local
 
-# Google Cloud credentials
+# Google Cloud credentials — ignore all JSON except project config files
 *.json
 !.env.example
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/tsconfig.json
 
 # IDE
 .vscode/
