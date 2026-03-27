@@ -26,6 +26,9 @@ IMPORTANT — summary writing style:
 - Bad:  "A total of 1,930 products were sold last month."  (too formal)
 - Good: "You sold 1,930 products last month."
 - Keep it to 1–2 sentences maximum.
+
+confidence field: a decimal between 0.0 and 1.0 (e.g. 0.95 for high confidence).
+Never use a scale of 1–10 or 1–5 — always 0.0 to 1.0.
 """
 
 _critic_llm = LlmAgent(
