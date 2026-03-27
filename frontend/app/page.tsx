@@ -117,11 +117,22 @@ export default function ChatPage() {
     try {
       const res = await fetch(`/api/sessions/${id}`);
       const data = await res.json();
-      const msgs: Message[] = (data.messages || []).map((m: { role: string; content: string }) => ({
-        id: crypto.randomUUID(),
-        role: m.role === "user" ? "user" : ("assistant" as const),
-        content: m.content,
-      }));
+      const msgs: Message[] = (data.messages || []).map((m: { role: string; content: string }) => {
+        let content: string | FinalAnswer = m.content;
+        if (m.role !== "user") {
+          try {
+            const parsed = JSON.parse(m.content);
+            if (parsed && typeof parsed === "object" && "summary" in parsed) {
+              content = parsed as FinalAnswer;
+            }
+          } catch { /* plain text — use as-is */ }
+        }
+        return {
+          id: crypto.randomUUID(),
+          role: m.role === "user" ? "user" : ("assistant" as const),
+          content,
+        };
+      });
       // Only apply if this session is still the active one
       if (activeSessionRef.current === id) {
         setMessages(msgs);

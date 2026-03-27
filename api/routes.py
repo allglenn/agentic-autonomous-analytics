@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -154,9 +153,9 @@ async def ask(request: QuestionRequest):
             # Try to parse as FinalAnswer for structured response
             try:
                 fa = FinalAnswer.model_validate_json(raw_text)
-                # Save summary to messages table for clean history display
+                # Save full JSON so history can render the structured card
                 try:
-                    await add_message(sid, "assistant", fa.summary)
+                    await add_message(sid, "assistant", fa.model_dump_json())
                 except Exception:
                     pass
                 logger.info(
