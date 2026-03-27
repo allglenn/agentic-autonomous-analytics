@@ -125,12 +125,12 @@ def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
 
     # Resolve source table — metric wins, dimensions must be compatible
     source_table = metric_def.source_table
-    for dim in dim_defs:
-        if dim.source_table != source_table:
+    for dim_name, dim_def in zip(dimensions, dim_defs):
+        if dim_def.source_table != source_table:
             raise ValueError(
-                f"Dimension '{dim}' is from table '{dim.source_table}' "
+                f"Dimension '{dim_name}' is from table '{dim_def.source_table}' "
                 f"but metric '{metric}' is from '{source_table}'. "
-                f"Use drill_down to combine across tables."
+                f"Call drill_down instead of run_query to combine across tables."
             )
 
     # ── Build SQL ──────────────────────────────────────────────────────────
