@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 600; // seconds — required for long-running LLM responses
+
 const API_URL = process.env.API_URL || "http://api:8080";
 
 export async function POST(request: NextRequest) {
@@ -17,6 +19,7 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(600_000), // 10 min — LLM pipeline can take 60–120 s
     });
 
     const data = await response.json();
