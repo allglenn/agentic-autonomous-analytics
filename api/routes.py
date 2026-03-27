@@ -13,8 +13,9 @@ from models.plan import IntentType
 from config.session import session_service
 from config.settings import settings
 from db.conversations import (
-    create_conversation, get_conversations, touch_conversation,
+    create_conversation, get_conversations,
     update_title, delete_conversation as db_delete_conversation,
+    add_message, get_messages,
 )
 
 router = APIRouter()
@@ -102,13 +103,12 @@ async def ask(request: QuestionRequest):
                 )
                 logger.info("[ask:%s] session_reused sid=%s state_updated", req_id, sid)
 
-            # Register conversation in our table (upsert via try/except)
+            # Register conversation and save user message
             try:
                 existing = await get_conversations()
                 if not any(c.id == sid for c in existing):
                     await create_conversation(sid, request.question[:60])
-                else:
-                    await touch_conversation(sid)
+                await add_message(sid, "user", request.question)
             except Exception:
                 pass
 
@@ -145,6 +145,17 @@ async def ask(request: QuestionRequest):
             )
             if final is None:
                 raise HTTPException(status_code=500, detail="No answer produced.")
+
+            # Save the final assistant answer to our messages table
+            try:
+                answer_text = " ".join(
+                    p.text for p in final.parts if getattr(p, "text", None)
+                ).strip()
+                if answer_text:
+                    await add_message(sid, "assistant", answer_text)
+            except Exception:
+                pass
+
             logger.info(
                 "[ask:%s] success total_elapsed=%.2fs",
                 req_id,
@@ -227,40 +238,10 @@ async def update_session_title(session_id: str, body: TitleUpdate):
 @router.get("/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
     try:
-        session = await session_service.get_session(
-            app_name="data_analyst", user_id="user", session_id=session_id
-        )
-        if session is None:
-            return {"session_id": session_id, "messages": []}
-
-        msgs = []
-        pending_assistant: str | None = None
-
-        for ev in session.events:
-            if not ev.content or not ev.content.parts:
-                continue
-            # Skip function calls / tool responses — internal plumbing
-            if any(hasattr(p, "function_call") and p.function_call for p in ev.content.parts):
-                continue
-            if any(hasattr(p, "function_response") and p.function_response for p in ev.content.parts):
-                continue
-            text = " ".join(p.text for p in ev.content.parts if getattr(p, "text", None)).strip()
-            if not text:
-                continue
-
-            if ev.author == "user":
-                # Flush the last assistant reply before the next user turn
-                if pending_assistant:
-                    msgs.append({"role": "assistant", "content": pending_assistant})
-                    pending_assistant = None
-                msgs.append({"role": "user", "content": text})
-            else:
-                # Keep overwriting — we only want the final reply per turn
-                pending_assistant = text
-
-        if pending_assistant:
-            msgs.append({"role": "assistant", "content": pending_assistant})
-
-        return {"session_id": session_id, "messages": msgs}
+        msgs = await get_messages(session_id)
+        return {
+            "session_id": session_id,
+            "messages": [{"role": m.role, "content": m.content} for m in msgs],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
