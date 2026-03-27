@@ -14,7 +14,7 @@ import argparse
 import os
 import random
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from faker import Faker
 from google.cloud import bigquery
@@ -136,7 +136,7 @@ def create_tables(client: bigquery.Client):
 
 
 def random_date(days_back: int = 90) -> datetime:
-    return datetime.utcnow() - timedelta(
+    return datetime.now(timezone.utc) - timedelta(
         days=random.randint(0, days_back),
         hours=random.randint(0, 23),
         minutes=random.randint(0, 59),
