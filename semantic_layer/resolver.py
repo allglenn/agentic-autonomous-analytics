@@ -96,6 +96,43 @@ TIME_RANGE_ALIASES = {
 }
 
 
+def _resolve_join_query(metric, metric_def, dimensions, dim_defs,
+                        source_table, date_filter, project, dataset) -> str:
+    """Generate a JOIN query between orders and order_items on order_id."""
+    orders_table = TABLE_MAP["orders"].format(project=project, dataset=dataset)
+    items_table  = TABLE_MAP["order_items"].format(project=project, dataset=dataset)
+
+    a = {"orders": "o", "order_items": "oi"}  # table aliases
+
+    # Prefix dimension columns with their table alias
+    select_parts = [f"{a[d.source_table]}.{d.column}" for d in dim_defs]
+    group_parts  = select_parts[:]
+
+    # Rewrite metric expression: qualify known columns with their table alias
+    expr = metric_def.expression
+    for col, tbl in [
+        ("shipping_cost", "orders"), ("amount", "orders"), ("status", "orders"),
+        ("is_first_order", "orders"), ("customer_id", "orders"),
+        ("order_id", "orders"), ("quantity", "order_items"),
+    ]:
+        expr = expr.replace(col, f"{a[tbl]}.{col}")
+
+    select_dims = (", ".join(select_parts) + ", ") if select_parts else ""
+    group_by    = ("GROUP BY " + ", ".join(group_parts)) if group_parts else ""
+    # Qualify the date column in the filter
+    qualified_filter = date_filter.replace("created_at", "o.created_at")
+
+    return (
+        f"SELECT\n"
+        f"  {select_dims}{expr} AS {metric}\n"
+        f"FROM {orders_table} o\n"
+        f"JOIN {items_table} oi ON o.order_id = oi.order_id\n"
+        f"WHERE {qualified_filter}\n"
+        f"{group_by}\n"
+        f"LIMIT {guardrails.max_query_rows}"
+    ).strip()
+
+
 def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
     """Translate a semantic metric request into a BigQuery SQL string."""
 
@@ -123,25 +160,33 @@ def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
     metric_def = METRICS[metric]
     dim_defs = [DIMENSIONS[d] for d in dimensions]
 
-    # Resolve source table — metric wins, dimensions must be compatible
+    # ── Resolve source table and detect cross-table needs ──────────────────
     source_table = metric_def.source_table
-    for dim_name, dim_def in zip(dimensions, dim_defs):
-        if dim_def.source_table != source_table:
-            raise ValueError(
-                f"Dimension '{dim_name}' is from table '{dim_def.source_table}' "
-                f"but metric '{metric}' is from '{source_table}'. "
-                f"Call drill_down instead of run_query to combine across tables."
-            )
-
-    # ── Build SQL ──────────────────────────────────────────────────────────
     project = settings.google_cloud_project
     dataset = settings.bigquery_dataset
+    date_filter = TIME_RANGE_FILTERS[time_range]
+
+    cross_dims = [(n, d) for n, d in zip(dimensions, dim_defs) if d.source_table != source_table]
+
+    if cross_dims:
+        cross_tables = {d.source_table for _, d in cross_dims}
+        # Only orders ↔ order_items JOIN is supported
+        if {source_table} | cross_tables == {"orders", "order_items"}:
+            return _resolve_join_query(
+                metric, metric_def, dimensions, dim_defs,
+                source_table, date_filter, project, dataset
+            )
+        raise ValueError(
+            f"Cross-table query between '{source_table}' and {cross_tables} "
+            f"is not supported. Sessions cannot be joined with orders/order_items."
+        )
+
+    # ── Single-table SQL ───────────────────────────────────────────────────
     table = TABLE_MAP[source_table].format(project=project, dataset=dataset)
 
     dim_columns = [d.column for d in dim_defs]
     select_dims = (", ".join(dim_columns) + ", ") if dim_columns else ""
     group_by = ("GROUP BY " + ", ".join(dim_columns)) if dim_columns else ""
-    date_filter = TIME_RANGE_FILTERS[time_range]
 
     sql = (
         f"SELECT\n"
