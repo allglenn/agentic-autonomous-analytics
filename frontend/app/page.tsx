@@ -3,10 +3,19 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 
+interface FinalAnswer {
+  summary: string;
+  findings: string[];
+  evidence: string[];
+  confidence: number;
+  validated: boolean;
+  critic_notes: string | null;
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant" | "error";
-  content: string;
+  content: string | FinalAnswer;
 }
 
 interface SessionMeta {
@@ -20,7 +29,7 @@ type ApiResponse =
   | { role: string; parts: { text: string }[] }
   | Record<string, unknown>;
 
-function parseApiResponse(data: ApiResponse): string {
+function parseApiResponse(data: ApiResponse): string | FinalAnswer {
   if (!data) return "No response received.";
 
   if ("needs_clarification" in data && data.needs_clarification) {
@@ -28,23 +37,16 @@ function parseApiResponse(data: ApiResponse): string {
       .clarification_question;
   }
 
-  if ("answer" in data && typeof (data as { answer: string }).answer === "string") {
-    return (data as { answer: string }).answer;
+  if ("answer" in data) {
+    const answer = (data as { answer: unknown }).answer;
+    if (typeof answer === "string") return answer;
+    if (answer && typeof answer === "object" && "summary" in answer) {
+      return answer as FinalAnswer;
+    }
   }
 
   if ("detail" in data && typeof (data as { detail: string }).detail === "string") {
     return (data as { detail: string }).detail;
-  }
-
-  if (
-    "parts" in data &&
-    Array.isArray((data as { parts: { text: string }[] }).parts)
-  ) {
-    const parts = (data as { role: string; parts: { text: string }[] }).parts;
-    return parts
-      .map((p) => (typeof p.text === "string" ? p.text : ""))
-      .filter(Boolean)
-      .join("\n");
   }
 
   return JSON.stringify(data, null, 2);
@@ -351,6 +353,8 @@ export default function ChatPage() {
                 }
 
                 // assistant
+                const isStructured = typeof message.content === "object" && message.content !== null && "summary" in message.content;
+                const fa = isStructured ? (message.content as FinalAnswer) : null;
                 return (
                   <div key={message.id} className="flex items-start gap-3">
                     <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
@@ -360,9 +364,44 @@ export default function ChatPage() {
                       <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
                         Analyst
                       </span>
-                      <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm text-sm text-[#E5E7EB] leading-relaxed whitespace-pre-wrap">
-                        {message.content}
-                      </div>
+                      {fa ? (
+                        <div className="bg-[#161616] border border-[#1E1E1E] rounded-sm text-sm text-[#E5E7EB] overflow-hidden">
+                          <div className="px-4 py-3 border-b border-[#1E1E1E]">
+                            <p className="font-medium leading-relaxed">{fa.summary}</p>
+                          </div>
+                          {fa.findings?.length > 0 && (
+                            <div className="px-4 py-3 border-b border-[#1E1E1E]">
+                              <p className="text-[10px] tracking-widest uppercase text-[#6B7280] font-medium mb-2">Findings</p>
+                              <ul className="space-y-1">
+                                {fa.findings.map((f, i) => <li key={i} className="text-[#9CA3AF] leading-relaxed">• {f}</li>)}
+                              </ul>
+                            </div>
+                          )}
+                          {fa.evidence?.length > 0 && (
+                            <div className="px-4 py-3 border-b border-[#1E1E1E]">
+                              <p className="text-[10px] tracking-widest uppercase text-[#6B7280] font-medium mb-2">Evidence</p>
+                              <ul className="space-y-1">
+                                {fa.evidence.map((e, i) => <li key={i} className="text-[#6B7280] text-xs leading-relaxed">• {e}</li>)}
+                              </ul>
+                            </div>
+                          )}
+                          <div className="px-4 py-2 flex items-center gap-4">
+                            <span className="text-[10px] tracking-widest uppercase text-[#374151]">
+                              Confidence {Math.round(fa.confidence * 100)}%
+                            </span>
+                            {fa.validated && (
+                              <span className="text-[10px] tracking-widest uppercase text-[#374151]">Validated</span>
+                            )}
+                            {fa.critic_notes && (
+                              <span className="text-[10px] text-[#6B7280]">{fa.critic_notes}</span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm text-sm text-[#E5E7EB] leading-relaxed whitespace-pre-wrap">
+                          {message.content as string}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
