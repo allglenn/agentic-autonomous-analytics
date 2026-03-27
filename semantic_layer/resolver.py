@@ -42,8 +42,29 @@ TIME_RANGE_FILTERS = {
 }
 
 
+TIME_RANGE_ALIASES = {
+    "last_week": "last_7_days",
+    "last_week_days": "last_7_days",
+    "past_7_days": "last_7_days",
+    "past_week": "last_7_days",
+    "last_month": "last_30_days",
+    "past_month": "last_30_days",
+    "past_30_days": "last_30_days",
+    "last_quarter": "last_90_days",
+    "past_quarter": "last_90_days",
+    "current_month": "this_month",
+    "current_week": "this_week",
+    "current_quarter": "this_quarter",
+    "current_year": "this_year",
+    "yesterday": "today",
+}
+
+
 def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
     """Translate a semantic metric request into a BigQuery SQL string."""
+
+    # ── Normalise aliases ──────────────────────────────────────────────────
+    time_range = TIME_RANGE_ALIASES.get(time_range, time_range)
 
     # ── Guardrail checks ───────────────────────────────────────────────────
     if metric not in guardrails.allowed_metrics:
