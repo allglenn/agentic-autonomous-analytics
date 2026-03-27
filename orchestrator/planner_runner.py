@@ -1,4 +1,3 @@
-import json
 import uuid
 from google.adk.runners import Runner
 from google.genai.types import Content, Part
@@ -21,18 +20,20 @@ async def run_planner(question: str) -> AnalysisPlan:
         session_id=str(uuid.uuid4()),
     )
     message = Content(role="user", parts=[Part(text=question)])
-    events = []
-    async for event in _runner.run_async(
+    async for _ in _runner.run_async(
         user_id="user",
         session_id=session.id,
         new_message=message,
     ):
-        events.append(event)
+        pass
 
-    raw = next(
-        (e.content.parts[0].text for e in reversed(events) if e.content),
-        None,
+    # ADK writes output_schema result to session.state[output_key]
+    session = await session_service.get_session(
+        app_name="planner",
+        user_id="user",
+        session_id=session.id,
     )
-    if raw is None:
+    plan_dict = session.state.get("analysis_plan")
+    if plan_dict is None:
         raise ValueError("Planner produced no output.")
-    return AnalysisPlan.model_validate(json.loads(raw))
+    return AnalysisPlan.model_validate(plan_dict)
