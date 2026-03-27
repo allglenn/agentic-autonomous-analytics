@@ -48,11 +48,13 @@ async def ask(request: QuestionRequest):
             session_id=request.session_id,
         )
         message = Content(role="user", parts=[Part(text=request.question)])
-        events = list(runner.run(
+        events = []
+        async for event in runner.run_async(
             user_id="user",
             session_id=session.id,
             new_message=message,
-        ))
+        ):
+            events.append(event)
         final = next(
             (e.content for e in reversed(events) if e.content),
             None,
