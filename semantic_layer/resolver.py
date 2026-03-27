@@ -42,6 +42,36 @@ TIME_RANGE_FILTERS = {
 }
 
 
+# Dimension aliases — map common LLM hallucinations to canonical semantic names
+DIMENSION_ALIASES = {
+    # channel
+    "marketing_channel": "channel",
+    "channel_name": "channel",
+    "acquisition_channel": "channel",
+    # traffic
+    "utm_source": "traffic_source",
+    "source": "traffic_source",
+    # product
+    "product_cat": "product_category",
+    "category": "product_category",
+    # device
+    "device_type": "device",
+    "platform": "device",
+    # customer
+    "segment": "customer_segment",
+    "customer_type_new": "customer_type",
+    # geo
+    "shipping_country": "country",
+    "shipping_region": "region",
+    "shipping_city": "city",
+    # promo
+    "coupon_code": "promotion_code",
+    "coupon": "promotion_code",
+    # order
+    "status": "order_status",
+    "order_status_name": "order_status",
+}
+
 TIME_RANGE_ALIASES = {
     "last_week": "last_7_days",
     "last_week_days": "last_7_days",
@@ -65,6 +95,7 @@ def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
 
     # ── Normalise aliases ──────────────────────────────────────────────────
     time_range = TIME_RANGE_ALIASES.get(time_range, time_range)
+    dimensions = [DIMENSION_ALIASES.get(d, d) for d in dimensions]
 
     # ── Guardrail checks ───────────────────────────────────────────────────
     if metric not in guardrails.allowed_metrics:
