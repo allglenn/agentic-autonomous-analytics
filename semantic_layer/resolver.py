@@ -37,7 +37,7 @@ TIME_RANGE_FILTERS = {
     ),
     "previous_quarter": (
         "DATE_TRUNC(DATE(created_at), QUARTER) = "
-        "DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 QUARTER), QUARTER)"
+        "DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH), QUARTER)"
     ),
 }
 
