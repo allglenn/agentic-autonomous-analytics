@@ -189,7 +189,10 @@ def resolve_query(metric: str, dimensions: List[str], time_range: str) -> str:
     dataset = settings.bigquery_dataset
     date_filter = TIME_RANGE_FILTERS[time_range]
 
-    cross_dims = [(n, d) for n, d in zip(dimensions, dim_defs) if d.source_table != source_table]
+    cross_dims = [
+        (n, d) for n, d in zip(dimensions, dim_defs)
+        if d.source_table != source_table and source_table not in d.compatible_tables
+    ]
 
     if cross_dims:
         cross_tables = {d.source_table for _, d in cross_dims}

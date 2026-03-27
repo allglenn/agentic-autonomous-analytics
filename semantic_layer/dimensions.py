@@ -4,9 +4,10 @@ from dataclasses import dataclass
 
 @dataclass
 class Dimension:
-    column: str        # SQL column name in the source table
-    source_table: str  # table this dimension lives in
+    column: str                      # SQL column name in the source table
+    source_table: str                # primary table this dimension lives in
     description: str
+    compatible_tables: tuple = ()    # additional tables that share the same column name
 
 
 # Dimension registry
@@ -84,6 +85,7 @@ DIMENSIONS: Dict[str, Dimension] = {
         column="device_type",
         source_table="orders",
         description="Device type (mobile, desktop, tablet)",
+        compatible_tables=("sessions",),
     ),
     "device_os": Dimension(
         column="device_os",
