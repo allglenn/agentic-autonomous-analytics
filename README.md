@@ -11,6 +11,8 @@ An agentic AI system that explores business data using natural language, powered
 - **Planner → Executor → CriticGate** — ADK-native multi-agent pipeline
 - **PostgreSQL** — ADK session execution state + self-managed conversations & messages tables
 
+![Platform screenshot](v1.png)
+
 ---
 
 ## Core Concepts
