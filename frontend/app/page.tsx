@@ -1,0 +1,314 @@
+"use client";
+
+import { useState, useEffect, useRef, useCallback } from "react";
+
+interface Message {
+  id: string;
+  role: "user" | "assistant" | "error";
+  content: string;
+}
+
+type ApiResponse =
+  | { needs_clarification: true; clarification_question: string }
+  | { detail: string }
+  | { role: string; parts: { text: string }[] }
+  | Record<string, unknown>;
+
+function parseApiResponse(data: ApiResponse): string {
+  if (!data) return "No response received.";
+
+  if ("needs_clarification" in data && data.needs_clarification) {
+    return (data as { needs_clarification: true; clarification_question: string })
+      .clarification_question;
+  }
+
+  if ("detail" in data && typeof (data as { detail: string }).detail === "string") {
+    return (data as { detail: string }).detail;
+  }
+
+  if (
+    "parts" in data &&
+    Array.isArray((data as { parts: { text: string }[] }).parts)
+  ) {
+    const parts = (data as { role: string; parts: { text: string }[] }).parts;
+    return parts
+      .map((p) => (typeof p.text === "string" ? p.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return JSON.stringify(data, null, 2);
+}
+
+const SUGGESTIONS = [
+  "Why did revenue drop last week?",
+  "Compare conversion rate this month vs last month",
+  "What are the top product categories by revenue?",
+];
+
+export default function ChatPage() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [sessionId] = useState<string>(() => crypto.randomUUID());
+
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-scroll to bottom whenever messages or loading state changes
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  // Auto-resize textarea
+  const resizeTextarea = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 140) + "px";
+  }, []);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    resizeTextarea();
+  };
+
+  const submitMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || loading) return;
+
+      const userMessage: Message = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: trimmed,
+      };
+
+      setMessages((prev) => [...prev, userMessage]);
+      setInput("");
+      setLoading(true);
+
+      // Reset textarea height
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+
+      try {
+        const res = await fetch("/api/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: trimmed, session_id: sessionId }),
+        });
+
+        const data: ApiResponse = await res.json();
+        const content = parseApiResponse(data);
+        const isError = res.status >= 400 || "detail" in data;
+
+        const assistantMessage: Message = {
+          id: crypto.randomUUID(),
+          role: isError ? "error" : "assistant",
+          content,
+        };
+
+        setMessages((prev) => [...prev, assistantMessage]);
+      } catch {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "error",
+            content: "An unexpected error occurred. Please try again.",
+          },
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loading, sessionId]
+  );
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitMessage(input);
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    submitMessage(input);
+  };
+
+  const handleSuggestion = (suggestion: string) => {
+    setInput(suggestion);
+    textareaRef.current?.focus();
+    setTimeout(resizeTextarea, 0);
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-[#111111]">
+      {/* Header */}
+      <header className="flex items-center justify-between px-8 py-4 bg-[#111111] border-b border-[#1E1E1E] flex-shrink-0">
+        <div>
+          <p className="text-xs tracking-widest uppercase text-[#6B7280] font-medium">
+            Allinsoft ware
+          </p>
+          <h1 className="text-base font-semibold text-[#E5E7EB] mt-0.5">
+            AI Data Analyst
+          </h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#1A56DB] opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#1A56DB]" />
+          </span>
+          <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium">
+            Live
+          </span>
+        </div>
+      </header>
+
+      {/* Messages area */}
+      <main className="flex-1 overflow-y-auto bg-[#0D0D0D] px-6 py-8">
+        {messages.length === 0 && !loading ? (
+          /* Empty state */
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <p className="text-xs tracking-widest uppercase text-[#6B7280] font-medium mb-4">
+              AI Data Analyst
+            </p>
+            <h2 className="text-2xl font-semibold text-[#E5E7EB] mb-3">
+              What do you want to know?
+            </h2>
+            <p className="text-sm text-[#6B7280] mb-10 max-w-sm">
+              Ask a question about your business data. The analyst will query
+              your data warehouse and return insights.
+            </p>
+            <div className="flex flex-col gap-2 w-full max-w-md">
+              {SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  onClick={() => handleSuggestion(suggestion)}
+                  className="text-left text-sm text-[#E5E7EB] bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm hover:border-[#2A2A2A] hover:bg-[#1a1a1a] transition-colors duration-150"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          /* Message list */
+          <div className="flex flex-col gap-6 max-w-4xl mx-auto">
+            {messages.map((message) => {
+              if (message.role === "user") {
+                return (
+                  <div key={message.id} className="flex justify-end">
+                    <div className="max-w-[72%] bg-[#1A56DB] text-white px-4 py-3 rounded-sm text-sm leading-relaxed">
+                      {message.content}
+                    </div>
+                  </div>
+                );
+              }
+
+              if (message.role === "error") {
+                return (
+                  <div key={message.id} className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
+                      A
+                    </div>
+                    <div className="flex flex-col gap-1 max-w-[78%]">
+                      <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
+                        Error
+                      </span>
+                      <div className="bg-[#1C1010] border border-[#3D1515] px-4 py-3 rounded-sm text-sm text-[#FCA5A5] leading-relaxed whitespace-pre-wrap">
+                        {message.content}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              // assistant
+              return (
+                <div key={message.id} className="flex items-start gap-3">
+                  <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
+                    A
+                  </div>
+                  <div className="flex flex-col gap-1 max-w-[78%]">
+                    <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
+                      Analyst
+                    </span>
+                    <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm text-sm text-[#E5E7EB] leading-relaxed whitespace-pre-wrap">
+                      {message.content}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Loading state */}
+            {loading && (
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-6 h-6 bg-[#1A56DB] flex items-center justify-center text-white text-xs font-semibold rounded-sm mt-5">
+                  A
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs tracking-widest uppercase text-[#6B7280] font-medium pl-1">
+                    Analyst
+                  </span>
+                  <div className="bg-[#161616] border border-[#1E1E1E] px-4 py-3 rounded-sm">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
+                        style={{ animationDelay: "0ms" }}
+                      />
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
+                        style={{ animationDelay: "150ms" }}
+                      />
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-[#1A56DB] animate-bounce"
+                        style={{ animationDelay: "300ms" }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+        )}
+      </main>
+
+      {/* Input area */}
+      <div className="bg-[#0D0D0D] border-t border-[#1E1E1E] px-6 pb-6 pt-4 flex-shrink-0">
+        <form
+          onSubmit={handleSubmit}
+          className="flex gap-3 items-end max-w-4xl mx-auto"
+        >
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask a question about your data..."
+            rows={1}
+            disabled={loading}
+            className="flex-1 bg-[#111111] border border-[#1E1E1E] text-[#E5E7EB] placeholder-[#4B5563] px-4 py-3 rounded-sm resize-none text-sm leading-relaxed focus:outline-none focus:border-[#1A56DB] transition-colors duration-150 disabled:opacity-50"
+            style={{ minHeight: "48px", maxHeight: "140px" }}
+          />
+          <button
+            type="submit"
+            disabled={loading || !input.trim()}
+            className="flex-shrink-0 bg-[#1A56DB] hover:bg-[#1d4ed8] text-white px-5 py-3 rounded-sm text-sm font-medium transition-colors duration-150 disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Send
+          </button>
+        </form>
+        <p className="text-center text-[10px] tracking-widest uppercase text-[#374151] mt-3 max-w-4xl mx-auto">
+          Allinsoft ware &middot; AI Analytics &middot; Powered by Google ADK
+        </p>
+      </div>
+    </div>
+  );
+}

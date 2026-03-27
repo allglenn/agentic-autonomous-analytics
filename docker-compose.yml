@@ -44,5 +44,22 @@ services:
         condition: service_started
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - API_URL=http://api:8080
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - api
+
 volumes:
   postgres_data:

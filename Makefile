@@ -1,4 +1,4 @@
-.PHONY: venv install run dev run-dev test docker-up docker-down seed
+.PHONY: venv install run dev run-dev test docker-up docker-down seed frontend
 
 # ── Virtual environment ────────────────────────────────────────────
 venv:
@@ -27,6 +27,10 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+# ── Frontend (local dev without Docker) ────────────────────────────
+frontend:
+	cd frontend && npm run dev
 
 # ── Seed data ──────────────────────────────────────────────────────
 seed:
