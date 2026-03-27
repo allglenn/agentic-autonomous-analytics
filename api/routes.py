@@ -1,21 +1,26 @@
+import asyncio
+import logging
+import time
 import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from google.adk.runners import Runner
+from google.adk.events import Event, EventActions
 from google.genai.types import Content, Part
-from orchestrator.pipeline import pipeline
+from orchestrator.pipeline import analysis_loop
 from orchestrator.planner_runner import run_planner
-from models.answer import FinalAnswer
 from models.plan import IntentType
 from config.session import session_service
+from config.settings import settings
 from db.conversations import (
-    create_conversation, get_conversations,
+    create_conversation, get_conversations, touch_conversation,
     update_title, delete_conversation as db_delete_conversation,
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-runner = Runner(agent=pipeline, app_name="data_analyst", session_service=session_service)
+runner = Runner(agent=analysis_loop, app_name="data_analyst", session_service=session_service)
 
 
 class QuestionRequest(BaseModel):
@@ -40,52 +45,133 @@ async def ask(request: QuestionRequest):
     Returns either a FinalAnswer or a ClarificationResponse if the
     intent cannot be determined from the question.
     """
+    req_id = str(uuid.uuid4())[:8]
+    ask_started = time.monotonic()
+    logger.info(
+        "[ask:%s] start session_id=%s question_len=%d",
+        req_id,
+        request.session_id,
+        len(request.question or ""),
+    )
     try:
-        # Step 1: run the planner only to check intent
-        plan = await run_planner(request.question)
-
-        if plan.intent == IntentType.CLARIFICATION_NEEDED:
-            return ClarificationResponse(
-                needs_clarification=True,
-                clarification_question=plan.clarification_question,
+        async with asyncio.timeout(settings.ask_timeout_seconds):
+            # Step 1: run planner once to classify intent and build the plan.
+            planner_started = time.monotonic()
+            plan = await run_planner(request.question)
+            logger.info(
+                "[ask:%s] planner_done intent=%s elapsed=%.2fs",
+                req_id,
+                plan.intent,
+                time.monotonic() - planner_started,
             )
 
-        # Step 2: intent is clear — run the full pipeline
-        sid = request.session_id or str(uuid.uuid4())
-        session = await session_service.get_session(
-            app_name="data_analyst",
-            user_id="user",
-            session_id=sid,
-        )
-        if session is None:
-            session = await session_service.create_session(
+            if plan.intent == IntentType.CLARIFICATION_NEEDED:
+                logger.info("[ask:%s] clarification_returned", req_id)
+                return ClarificationResponse(
+                    needs_clarification=True,
+                    clarification_question=plan.clarification_question,
+                )
+
+            # Step 2: intent is clear — run execution loop with injected analysis_plan.
+            sid = request.session_id or str(uuid.uuid4())
+            session = await session_service.get_session(
                 app_name="data_analyst",
                 user_id="user",
                 session_id=sid,
             )
-        # Register conversation in our table (upsert via try/except)
-        try:
-            existing = await get_conversations()
-            if not any(c.id == sid for c in existing):
-                await create_conversation(sid, request.question[:60])
-        except Exception:
-            pass
-        message = Content(role="user", parts=[Part(text=request.question)])
-        events = []
-        async for event in runner.run_async(
-            user_id="user",
-            session_id=session.id,
-            new_message=message,
-        ):
-            events.append(event)
-        final = next(
-            (e.content for e in reversed(events) if e.content),
-            None,
+            if session is None:
+                session = await session_service.create_session(
+                    app_name="data_analyst",
+                    user_id="user",
+                    session_id=sid,
+                    state={"analysis_plan": plan.model_dump(), "critic_notes": ""},
+                )
+                logger.info("[ask:%s] session_created sid=%s", req_id, sid)
+            else:
+                await session_service.append_event(
+                    session=session,
+                    event=Event(
+                        author="system",
+                        actions=EventActions(
+                            stateDelta={
+                                "analysis_plan": plan.model_dump(),
+                                "critic_notes": "",
+                            }
+                        ),
+                    ),
+                )
+                logger.info("[ask:%s] session_reused sid=%s state_updated", req_id, sid)
+
+            # Register conversation in our table (upsert via try/except)
+            try:
+                existing = await get_conversations()
+                if not any(c.id == sid for c in existing):
+                    await create_conversation(sid, request.question[:60])
+                else:
+                    await touch_conversation(sid)
+            except Exception:
+                pass
+
+            message = Content(role="user", parts=[Part(text=request.question)])
+            events = []
+            event_count = 0
+            loop_started = time.monotonic()
+            logger.info("[ask:%s] analysis_loop_start sid=%s", req_id, session.id)
+            async for event in runner.run_async(
+                user_id="user",
+                session_id=session.id,
+                new_message=message,
+            ):
+                events.append(event)
+                event_count += 1
+                if event_count <= 5 or event_count % 10 == 0:
+                    logger.info(
+                        "[ask:%s] analysis_event #%d author=%s has_content=%s",
+                        req_id,
+                        event_count,
+                        getattr(event, "author", "unknown"),
+                        bool(getattr(event, "content", None)),
+                    )
+            logger.info(
+                "[ask:%s] analysis_loop_done events=%d elapsed=%.2fs",
+                req_id,
+                event_count,
+                time.monotonic() - loop_started,
+            )
+
+            final = next(
+                (e.content for e in reversed(events) if e.content),
+                None,
+            )
+            if final is None:
+                raise HTTPException(status_code=500, detail="No answer produced.")
+            logger.info(
+                "[ask:%s] success total_elapsed=%.2fs",
+                req_id,
+                time.monotonic() - ask_started,
+            )
+            return final
+    except TimeoutError:
+        logger.warning(
+            "[ask:%s] timeout total_elapsed=%.2fs limit=%ss",
+            req_id,
+            time.monotonic() - ask_started,
+            settings.ask_timeout_seconds,
         )
-        if final is None:
-            raise HTTPException(status_code=500, detail="No answer produced.")
-        return final
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Request timed out after {settings.ask_timeout_seconds}s. "
+                "Try a narrower question or retry."
+            ),
+        )
     except Exception as e:
+        logger.exception(
+            "[ask:%s] failed total_elapsed=%.2fs error=%s",
+            req_id,
+            time.monotonic() - ask_started,
+            e,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -146,19 +232,35 @@ async def get_session_messages(session_id: str):
         )
         if session is None:
             return {"session_id": session_id, "messages": []}
+
         msgs = []
+        pending_assistant: str | None = None
+
         for ev in session.events:
             if not ev.content or not ev.content.parts:
                 continue
-            text = " ".join(p.text for p in ev.content.parts if getattr(p, "text", None)).strip()
-            if not text:
-                continue
+            # Skip function calls / tool responses — internal plumbing
             if any(hasattr(p, "function_call") and p.function_call for p in ev.content.parts):
                 continue
             if any(hasattr(p, "function_response") and p.function_response for p in ev.content.parts):
                 continue
-            role = "user" if ev.author == "user" else "assistant"
-            msgs.append({"role": role, "content": text})
+            text = " ".join(p.text for p in ev.content.parts if getattr(p, "text", None)).strip()
+            if not text:
+                continue
+
+            if ev.author == "user":
+                # Flush the last assistant reply before the next user turn
+                if pending_assistant:
+                    msgs.append({"role": "assistant", "content": pending_assistant})
+                    pending_assistant = None
+                msgs.append({"role": "user", "content": text})
+            else:
+                # Keep overwriting — we only want the final reply per turn
+                pending_assistant = text
+
+        if pending_assistant:
+            msgs.append({"role": "assistant", "content": pending_assistant})
+
         return {"session_id": session_id, "messages": msgs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

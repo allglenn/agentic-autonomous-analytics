@@ -62,6 +62,7 @@ export default function ChatPage() {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const activeSessionRef = useRef(currentSessionId);
 
   // Auto-scroll to bottom whenever messages or loading state changes
   useEffect(() => {
@@ -95,12 +96,15 @@ export default function ChatPage() {
   };
 
   const handleNewChat = () => {
-    setCurrentSessionId(crypto.randomUUID());
+    const newId = crypto.randomUUID();
+    activeSessionRef.current = newId;
+    setCurrentSessionId(newId);
     setMessages([]);
     textareaRef.current?.focus();
   };
 
   const handleSelectSession = async (id: string) => {
+    activeSessionRef.current = id;
     setCurrentSessionId(id);
     setMessages([]);
     setLoading(true);
@@ -112,9 +116,12 @@ export default function ChatPage() {
         role: m.role === "user" ? "user" : ("assistant" as const),
         content: m.content,
       }));
-      setMessages(msgs);
+      // Only apply if this session is still the active one
+      if (activeSessionRef.current === id) {
+        setMessages(msgs);
+      }
     } catch {
-      setMessages([]);
+      if (activeSessionRef.current === id) setMessages([]);
     } finally {
       setLoading(false);
     }
@@ -132,14 +139,18 @@ export default function ChatPage() {
   };
 
   const handleRenameSession = async (id: string, title: string) => {
-    await fetch(`/api/sessions/${id}`, {
+    const res = await fetch(`/api/sessions/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title }),
     });
-    setSessions((prev) =>
-      prev.map((s) => (s.session_id === id ? { ...s, title } : s))
-    );
+    if (res.ok) {
+      setSessions((prev) =>
+        prev.map((s) => (s.session_id === id ? { ...s, title } : s))
+      );
+    } else {
+      fetchSessions();
+    }
   };
 
   const submitMessage = useCallback(
@@ -162,11 +173,12 @@ export default function ChatPage() {
         textareaRef.current.style.height = "auto";
       }
 
+      const sessionIdAtSubmit = currentSessionId;
       try {
         const res = await fetch("/api/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: trimmed, session_id: currentSessionId }),
+          body: JSON.stringify({ question: trimmed, session_id: sessionIdAtSubmit }),
         });
 
         const data: ApiResponse = await res.json();
@@ -179,7 +191,10 @@ export default function ChatPage() {
           content,
         };
 
-        setMessages((prev) => [...prev, assistantMessage]);
+        // Only update messages if the user hasn't switched to a different session
+        if (activeSessionRef.current === sessionIdAtSubmit) {
+          setMessages((prev) => [...prev, assistantMessage]);
+        }
         fetchSessions();
       } catch {
         setMessages((prev) => [

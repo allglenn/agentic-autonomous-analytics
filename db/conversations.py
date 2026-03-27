@@ -42,8 +42,17 @@ async def create_conversation(session_id: str, title: str) -> Conversation:
 
 async def get_conversations() -> list[Conversation]:
     async with _Session() as db:
-        result = await db.execute(select(Conversation).order_by(Conversation.created_at.desc()))
+        result = await db.execute(select(Conversation).order_by(Conversation.updated_at.desc()))
         return result.scalars().all()
+
+
+async def touch_conversation(session_id: str) -> None:
+    async with _Session() as db:
+        result = await db.execute(select(Conversation).where(Conversation.id == session_id))
+        conv = result.scalar_one_or_none()
+        if conv:
+            conv.updated_at = datetime.now(timezone.utc)
+            await db.commit()
 
 
 async def update_title(session_id: str, title: str) -> bool:

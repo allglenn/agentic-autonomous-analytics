@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8080
     database_url: str = "postgresql+asyncpg://adk:adk@localhost:5432/adk_sessions"
+    ask_timeout_seconds: int = 120
+    bigquery_query_timeout_seconds: int = 30
 
     class Config:
         env_file = ".env"
