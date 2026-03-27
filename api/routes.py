@@ -1,3 +1,4 @@
+import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from google.adk.runners import Runner
@@ -15,7 +16,7 @@ runner = Runner(agent=pipeline, app_name="data_analyst", session_service=session
 
 class QuestionRequest(BaseModel):
     question: str
-    session_id: str = "default"
+    session_id: str | None = None
 
 
 class ClarificationResponse(BaseModel):
@@ -45,7 +46,7 @@ async def ask(request: QuestionRequest):
         session = await session_service.create_session(
             app_name="data_analyst",
             user_id="user",
-            session_id=request.session_id,
+            session_id=request.session_id or str(uuid.uuid4()),
         )
         message = Content(role="user", parts=[Part(text=request.question)])
         events = []
