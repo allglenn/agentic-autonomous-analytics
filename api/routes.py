@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -10,6 +11,7 @@ from google.genai.types import Content, Part
 from orchestrator.pipeline import analysis_loop
 from orchestrator.planner_runner import run_planner
 from models.plan import IntentType
+from models.answer import FinalAnswer
 from config.session import session_service
 from config.settings import settings
 from db.conversations import (
@@ -56,9 +58,17 @@ async def ask(request: QuestionRequest):
     )
     try:
         async with asyncio.timeout(settings.ask_timeout_seconds):
-            # Step 1: run planner once to classify intent and build the plan.
+            sid = request.session_id or str(uuid.uuid4())
+
+            # Fetch prior turns BEFORE saving current message (used for planner context)
+            try:
+                prior_messages = await get_messages(sid)
+            except Exception:
+                prior_messages = []
+
+            # Step 1: run planner with conversation context so follow-ups resolve correctly.
             planner_started = time.monotonic()
-            plan = await run_planner(request.question)
+            plan = await run_planner(request.question, history=prior_messages[-6:])
             logger.info(
                 "[ask:%s] planner_done intent=%s elapsed=%.2fs",
                 req_id,
@@ -68,13 +78,21 @@ async def ask(request: QuestionRequest):
 
             if plan.intent == IntentType.CLARIFICATION_NEEDED:
                 logger.info("[ask:%s] clarification_returned", req_id)
+                # Save clarification exchange so next turn has context
+                try:
+                    existing = await get_conversations()
+                    if not any(c.id == sid for c in existing):
+                        await create_conversation(sid, request.question[:60])
+                    await add_message(sid, "user", request.question)
+                    await add_message(sid, "assistant", plan.clarification_question)
+                except Exception:
+                    pass
                 return ClarificationResponse(
                     needs_clarification=True,
                     clarification_question=plan.clarification_question,
                 )
 
             # Step 2: intent is clear — run execution loop with injected analysis_plan.
-            sid = request.session_id or str(uuid.uuid4())
             session = await session_service.get_session(
                 app_name="data_analyst",
                 user_id="user",
@@ -146,11 +164,23 @@ async def ask(request: QuestionRequest):
             if final is None:
                 raise HTTPException(status_code=500, detail="No answer produced.")
 
-            # Save the final assistant answer to our messages table
+            # Extract text and parse FinalAnswer JSON for a clean human-readable response
+            raw_text = " ".join(
+                p.text for p in final.parts if getattr(p, "text", None)
+            ).strip()
+
+            answer_text = raw_text
             try:
-                answer_text = " ".join(
-                    p.text for p in final.parts if getattr(p, "text", None)
-                ).strip()
+                fa = FinalAnswer.model_validate_json(raw_text)
+                lines = [fa.summary]
+                if fa.findings:
+                    lines.append("")
+                    lines.extend(f"• {f}" for f in fa.findings)
+                answer_text = "\n".join(lines)
+            except Exception:
+                pass  # Not a FinalAnswer JSON — use raw text as-is
+
+            try:
                 if answer_text:
                     await add_message(sid, "assistant", answer_text)
             except Exception:
@@ -161,7 +191,7 @@ async def ask(request: QuestionRequest):
                 req_id,
                 time.monotonic() - ask_started,
             )
-            return final
+            return {"answer": answer_text}
     except TimeoutError:
         logger.warning(
             "[ask:%s] timeout total_elapsed=%.2fs limit=%ss",

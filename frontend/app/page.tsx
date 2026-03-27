@@ -28,6 +28,10 @@ function parseApiResponse(data: ApiResponse): string {
       .clarification_question;
   }
 
+  if ("answer" in data && typeof (data as { answer: string }).answer === "string") {
+    return (data as { answer: string }).answer;
+  }
+
   if ("detail" in data && typeof (data as { detail: string }).detail === "string") {
     return (data as { detail: string }).detail;
   }

@@ -15,14 +15,18 @@ _runner = Runner(
 logger = logging.getLogger(__name__)
 
 
-async def run_planner(question: str) -> AnalysisPlan:
-    """Run only the planner agent and return the structured AnalysisPlan."""
+async def run_planner(question: str, history: list | None = None) -> AnalysisPlan:
+    """Run only the planner agent and return the structured AnalysisPlan.
+
+    history: recent Message rows from the DB to provide conversation context.
+    """
     started = time.monotonic()
     planner_run_id = str(uuid.uuid4())[:8]
     logger.info(
-        "[planner:%s] start question_len=%d",
+        "[planner:%s] start question_len=%d history_turns=%d",
         planner_run_id,
         len(question or ""),
+        len(history) if history else 0,
     )
     session = await session_service.create_session(
         app_name="planner",
@@ -30,7 +34,14 @@ async def run_planner(question: str) -> AnalysisPlan:
         session_id=str(uuid.uuid4()),
     )
     logger.info("[planner:%s] session_created sid=%s", planner_run_id, session.id)
-    message = Content(role="user", parts=[Part(text=question)])
+
+    if history:
+        ctx = "\n".join(f"{m.role.upper()}: {m.content}" for m in history)
+        full_text = f"Conversation so far:\n{ctx}\n\nNew question: {question}"
+    else:
+        full_text = question
+
+    message = Content(role="user", parts=[Part(text=full_text)])
     event_count = 0
     async for _ in _runner.run_async(
         user_id="user",
