@@ -108,6 +108,7 @@ def create_tables(client: bigquery.Client):
         "order_items": [
             bigquery.SchemaField("order_item_id", "STRING"),
             bigquery.SchemaField("order_id", "STRING"),
+            bigquery.SchemaField("created_at", "TIMESTAMP"),
             bigquery.SchemaField("product_name", "STRING"),
             bigquery.SchemaField("product_category", "STRING"),
             bigquery.SchemaField("brand", "STRING"),
@@ -199,6 +200,7 @@ def generate_data(n_orders: int):
             order_items.append({
                 "order_item_id": str(uuid.uuid4()),
                 "order_id": order_id,
+                "created_at": created_at.isoformat(),
                 "product_name": product,
                 "product_category": category,
                 "brand": brand,
