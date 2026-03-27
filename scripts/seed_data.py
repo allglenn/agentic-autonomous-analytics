@@ -71,10 +71,15 @@ def create_dataset(client: bigquery.Client):
     dataset_ref = bigquery.Dataset(f"{PROJECT}.{DATASET}")
     dataset_ref.location = "US"
     try:
-        client.create_dataset(dataset_ref, exists_ok=True)
-        print(f"  Dataset {PROJECT}.{DATASET} ready")
+        client.delete_dataset(dataset_ref, delete_contents=True, not_found_ok=True)
+        print(f"  Dropped {PROJECT}.{DATASET}")
     except Exception as e:
-        print(f"  Dataset warning: {e}")
+        print(f"  Drop warning: {e}")
+    try:
+        client.create_dataset(dataset_ref)
+        print(f"  Created {PROJECT}.{DATASET}")
+    except Exception as e:
+        print(f"  Create warning: {e}")
 
 
 def create_tables(client: bigquery.Client):
