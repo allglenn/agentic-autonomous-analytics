@@ -8,13 +8,14 @@ from orchestrator.planner_runner import run_planner
 from models.answer import FinalAnswer
 from models.plan import IntentType
 from config.session import session_service
+from db.conversations import (
+    create_conversation, get_conversations,
+    update_title, delete_conversation as db_delete_conversation,
+)
 
 router = APIRouter()
 
 runner = Runner(agent=pipeline, app_name="data_analyst", session_service=session_service)
-
-# In-memory custom title store (survives hot-reload, resets on container restart)
-_session_titles: dict[str, str] = {}
 
 
 class QuestionRequest(BaseModel):
@@ -62,8 +63,13 @@ async def ask(request: QuestionRequest):
                 user_id="user",
                 session_id=sid,
             )
-        if not _session_titles.get(sid):
-            _session_titles[sid] = request.question[:60]
+        # Register conversation in our table (upsert via try/except)
+        try:
+            existing = await get_conversations()
+            if not any(c.id == sid for c in existing):
+                await create_conversation(sid, request.question[:60])
+        except Exception:
+            pass
         message = Content(role="user", parts=[Part(text=request.question)])
         events = []
         async for event in runner.run_async(
@@ -100,20 +106,8 @@ async def get_dimensions():
 @router.get("/sessions")
 async def list_sessions():
     try:
-        resp = await session_service.list_sessions(app_name="data_analyst", user_id="user")
-        result = []
-        for s in resp.sessions:
-            title = _session_titles.get(s.id)
-            if not title:
-                for ev in s.events:
-                    if ev.author == "user" and ev.content and ev.content.parts:
-                        text = next((p.text for p in ev.content.parts if getattr(p, "text", None)), None)
-                        if text:
-                            title = text[:60]
-                            break
-            result.append({"session_id": s.id, "title": title or "New conversation"})
-        result.sort(key=lambda x: x["session_id"], reverse=True)
-        return {"sessions": result}
+        convs = await get_conversations()
+        return {"sessions": [{"session_id": c.id, "title": c.title} for c in convs]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -121,25 +115,37 @@ async def list_sessions():
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     try:
-        await session_service.delete_session(app_name="data_analyst", user_id="user", session_id=session_id)
-        _session_titles.pop(session_id, None)
+        # Delete from our conversations table
+        await db_delete_conversation(session_id)
+        # Also delete the ADK session (best effort)
+        try:
+            await session_service.delete_session(
+                app_name="data_analyst", user_id="user", session_id=session_id
+            )
+        except Exception:
+            pass
         return {"deleted": session_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.patch("/sessions/{session_id}/title")
-async def update_title(session_id: str, body: TitleUpdate):
-    _session_titles[session_id] = body.title[:80]
-    return {"session_id": session_id, "title": body.title}
+async def update_session_title(session_id: str, body: TitleUpdate):
+    try:
+        await update_title(session_id, body.title)
+        return {"session_id": session_id, "title": body.title}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_messages(session_id: str):
+async def get_session_messages(session_id: str):
     try:
-        session = await session_service.get_session(app_name="data_analyst", user_id="user", session_id=session_id)
+        session = await session_service.get_session(
+            app_name="data_analyst", user_id="user", session_id=session_id
+        )
         if session is None:
-            raise HTTPException(status_code=404, detail="Session not found")
+            return {"session_id": session_id, "messages": []}
         msgs = []
         for ev in session.events:
             if not ev.content or not ev.content.parts:
@@ -147,7 +153,6 @@ async def get_messages(session_id: str):
             text = " ".join(p.text for p in ev.content.parts if getattr(p, "text", None)).strip()
             if not text:
                 continue
-            # Skip function call / tool result noise — only keep human-readable text
             if any(hasattr(p, "function_call") and p.function_call for p in ev.content.parts):
                 continue
             if any(hasattr(p, "function_response") and p.function_response for p in ev.content.parts):
@@ -155,7 +160,5 @@ async def get_messages(session_id: str):
             role = "user" if ev.author == "user" else "assistant"
             msgs.append({"role": role, "content": text})
         return {"session_id": session_id, "messages": msgs}
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
