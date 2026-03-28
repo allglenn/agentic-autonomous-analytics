@@ -25,6 +25,16 @@ services:
       - --project=local-project
       - --dataset=analytics
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   api:
     build: .
     ports:
@@ -35,6 +45,7 @@ services:
       - BIGQUERY_EMULATOR_HOST=bigquery:9050
       - GOOGLE_CLOUD_PROJECT=local-project
       - DATABASE_URL=postgresql+asyncpg://adk:adk@postgres:5432/adk_sessions
+      - REDIS_URL=redis://redis:6379/0
     volumes:
       - .:/app
     depends_on:
@@ -42,6 +53,8 @@ services:
         condition: service_healthy
       bigquery:
         condition: service_started
+      redis:
+        condition: service_healthy
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
 
   frontend:

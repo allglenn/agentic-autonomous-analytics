@@ -362,9 +362,65 @@ The full structured object is returned to the frontend for rich display.
 | BigQuery           | Cloud data warehouse                                         |
 | Semantic Layer     | Metric abstraction — no raw SQL in agents                    |
 | PostgreSQL         | ADK session state + conversations & messages tables          |
+| Redis              | Query result cache (5 min TTL, shared across replicas)       |
 | Python / FastAPI   | Backend + REST API                                           |
 | Next.js 14         | Chat frontend (port 3000)                                    |
 | Docker / Cloud Run | Containerised deployment                                     |
+
+---
+
+## Services Architecture
+
+```mermaid
+graph TD
+    User["🌐 Browser\n(localhost:3000)"]
+
+    subgraph Docker Compose
+        FE["frontend\nNext.js 14\n:3000"]
+        API["api\nFastAPI + Google ADK\n:8080"]
+        PG["postgres\nPostgreSQL 16\n:5432"]
+        BQ["bigquery\nBQ Emulator\n:9050 / :9060"]
+        RD["redis\nRedis 7\n:6379"]
+    end
+
+    GCP["☁️ Gemini API\n(Google GenAI)"]
+
+    User -->|"HTTP"| FE
+    FE -->|"POST /ask\nGET /sessions"| API
+    API -->|"conversations\nmessages"| PG
+    API -->|"SQL queries"| BQ
+    API -->|"cache get/set\n5 min TTL"| RD
+    API -->|"LLM calls\nPlanner · Executor · Critic"| GCP
+```
+
+### Service breakdown
+
+| Service | Image | Port(s) | Role |
+| --- | --- | --- | --- |
+| `frontend` | Custom (Next.js 14) | 3000 | Chat UI — renders questions, answers, session history |
+| `api` | Custom (Python 3.11 / FastAPI) | 8080 | Orchestrates the full agent pipeline, exposes REST endpoints |
+| `postgres` | `postgres:16-alpine` | 5432 | Stores conversation list and message history |
+| `bigquery` | `ghcr.io/goccy/bigquery-emulator` | 9050 (REST) · 9060 (gRPC) | Local BigQuery emulator — replaces GCP in dev |
+| `redis` | `redis:7-alpine` | 6379 | Shared query result cache across API replicas |
+
+### Startup order
+
+```text
+postgres ──healthcheck──┐
+                        ├──► api ──► frontend
+redis    ──healthcheck──┘
+bigquery ──started──────┘
+```
+
+`api` waits for postgres and redis to pass their healthchecks and for the bigquery emulator to start before accepting traffic. `frontend` waits for `api`.
+
+### Data flows
+
+- **User question** → `frontend` → `POST /api/ask` (Next.js proxy) → `POST /ask` (FastAPI)
+- **Planner + Executor + Critic** → LLM calls to Gemini API (external, over HTTPS)
+- **Every tool call** (`run_query`, `compare_periods`, etc.) → checks Redis cache → on miss, queries BigQuery emulator → writes result back to Redis
+- **Conversation persistence** → every user message and assistant answer written to PostgreSQL `messages` table
+- **Session list** → read from PostgreSQL `conversations` table on sidebar load
 
 ---
 
@@ -595,9 +651,50 @@ These questions are designed to exercise every path in the architecture diagram.
 
 ---
 
+## Performance
+
+### Optimisations shipped (feat/speed-optimization)
+
+| Change | Where | Est. Speedup |
+| --- | --- | --- |
+| Metric/dimension catalogue embedded in Executor prompt — no `list_metrics`/`list_dimensions` tool call on every request | `agents/executor.py` | ~15–25% |
+| Redis query result cache (5 min TTL, keyed on SQL MD5) — shared across all replicas, falls back to in-memory if Redis is unavailable | `bigquery/executor.py` | ~10–30% on cache hits |
+| Fast path for `single_value` intents — calls `run_query` directly, skips the Executor+Critic loop | `api/routes.py` | ~30–50% on simple queries |
+
+### BigQuery table recommendations (infra config)
+
+All queries filter on `created_at`. Applying the following in GCP reduces bytes scanned and query latency:
+
+**Partitioning** — partition all three tables by `created_at` (DAY):
+
+```sql
+-- Example for orders table
+ALTER TABLE `<project>.<dataset>.orders`
+SET OPTIONS (
+  partition_expiration_days = NULL
+);
+
+-- When (re-)creating:
+CREATE TABLE `<project>.<dataset>.orders`
+PARTITION BY DATE(created_at)
+...
+```
+
+**Clustering** — cluster on the most common filter/group-by dimensions:
+
+| Table | Recommended cluster columns |
+| --- | --- |
+| `orders` | `marketing_channel`, `shipping_country`, `status` |
+| `order_items` | `product_category`, `brand` |
+| `sessions` | `traffic_source`, `device_type` |
+
+These are pure GCP console / DDL changes — no application code needed. With realistic data volumes, partitioning alone reduces bytes scanned by 80–95% for time-bounded queries.
+
+---
+
 ## Roadmap
 
-- [ ] Add caching layer (Redis / Firestore)
+- [x] Add caching layer (Redis, 5 min TTL, in-memory fallback)
 - [x] Add memory (conversation context via messages table)
 - [ ] Add alerting (proactive insights)
 - [ ] Add dashboard integration (Looker / Streamlit)
