@@ -8,8 +8,9 @@ from google.adk.runners import Runner
 from google.genai.types import Content, Part
 from orchestrator.pipeline import analysis_loop
 from orchestrator.planner_runner import run_planner
-from models.plan import IntentType
+from models.plan import AnalysisPlan, IntentType
 from models.answer import FinalAnswer
+from tools.run_query import run_query
 from config.session import session_service
 from config.settings import settings
 from db.conversations import (
@@ -22,6 +23,53 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 runner = Runner(agent=analysis_loop, app_name="data_analyst", session_service=session_service)
+
+
+async def _fast_single_value(plan: AnalysisPlan) -> FinalAnswer:
+    """
+    Fast path for single_value intents: call run_query directly, skip the
+    Executor+Critic loop entirely. Saves 3-4 LLM round-trips.
+    """
+    result = await run_query(
+        metric=plan.metrics[0],
+        dimensions=plan.dimensions,
+        time_range=plan.time_range,
+    )
+    rows = result.get("rows", [])
+    metric = plan.metrics[0]
+    time_range = plan.time_range.replace("_", " ")
+
+    if not rows:
+        summary = f"No data found for {metric} over {time_range}."
+        findings = [summary]
+    elif not plan.dimensions:
+        # Single aggregated number
+        value = rows[0].get(metric)
+        if isinstance(value, float) and value < 1:
+            formatted = f"{value:.1%}"
+        elif isinstance(value, float):
+            formatted = f"{value:,.2f}"
+        else:
+            formatted = f"{value:,}" if value is not None else "N/A"
+        summary = f"{metric.replace('_', ' ').title()} for {time_range}: {formatted}."
+        findings = [summary]
+    else:
+        # Grouped result — summarise top rows
+        dim = plan.dimensions[0]
+        top = rows[:5]
+        findings = [
+            f"{r.get(dim, '?')}: {r.get(metric)}"
+            for r in top
+        ]
+        summary = f"{metric.replace('_', ' ').title()} by {dim} for {time_range} ({len(rows)} segments)."
+
+    return FinalAnswer(
+        summary=summary,
+        findings=findings,
+        evidence=[f"Source: {metric} / {plan.time_range}"],
+        confidence=0.95,
+        validated=True,
+    )
 
 
 class QuestionRequest(BaseModel):
@@ -90,9 +138,34 @@ async def ask(request: QuestionRequest):
                     clarification_question=plan.clarification_question,
                 )
 
-            # Step 2: intent is clear — create a fresh ADK session per request so
-            # old tool results never bleed into the new execution context.
-            # Conversation history is managed via our messages table, not ADK.
+            # Step 2a: fast path for simple single-value lookups — skip the full
+            # Executor+Critic loop and answer directly from run_query.
+            if plan.intent == IntentType.SINGLE_VALUE and len(plan.metrics) == 1:
+                fast_started = time.monotonic()
+                fa = await _fast_single_value(plan)
+                logger.info(
+                    "[ask:%s] fast_path_done elapsed=%.2fs",
+                    req_id,
+                    time.monotonic() - fast_started,
+                )
+                try:
+                    existing = await get_conversations()
+                    if not any(c.id == sid for c in existing):
+                        await create_conversation(sid, request.question[:60])
+                    await add_message(sid, "user", request.question)
+                    await add_message(sid, "assistant", fa.model_dump_json())
+                except Exception:
+                    pass
+                logger.info(
+                    "[ask:%s] success total_elapsed=%.2fs",
+                    req_id,
+                    time.monotonic() - ask_started,
+                )
+                return {"answer": fa.model_dump()}
+
+            # Step 2b: comparison/insight intents — run the full Executor+Critic loop.
+            # Create a fresh ADK session per request so old tool results never bleed
+            # into the new execution context.
             adk_sid = str(uuid.uuid4())
             session = await session_service.create_session(
                 app_name="data_analyst",
