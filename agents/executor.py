@@ -1,9 +1,23 @@
 from google.adk.agents import LlmAgent, LoopAgent
 from config.settings import settings
 from config.guardrails import guardrails
-from tools import run_query, compare_periods, drill_down, list_metrics, list_dimensions, decompose, correlate
+from tools import run_query, compare_periods, drill_down, decompose, correlate
+from semantic_layer.metrics import METRICS
+from semantic_layer.dimensions import DIMENSIONS
 
-EXECUTOR_STEP_INSTRUCTION = """
+# Build catalogues at module load — same approach as planner — so the executor
+# never needs to call list_metrics/list_dimensions at runtime.
+_METRIC_CATALOGUE = "\n".join(
+    f"  - {name} (table: {m.source_table}): {m.description}"
+    for name, m in METRICS.items()
+)
+
+_DIMENSION_CATALOGUE = "\n".join(
+    f"  - {name} (table: {d.source_table}): {d.description}"
+    for name, d in DIMENSIONS.items()
+)
+
+EXECUTOR_STEP_INSTRUCTION = f"""
 You are a data analysis executor running one step of a ReAct reasoning loop:
   Thought → Action → Observation
 
@@ -12,9 +26,13 @@ Before starting, read the session state:
 - 'critic_notes': if present, the critic found issues with a previous attempt.
   Address these notes explicitly before producing a new answer.
 
+AVAILABLE METRICS (use ONLY these exact names):
+{_METRIC_CATALOGUE}
+
+AVAILABLE DIMENSIONS (use ONLY these exact names):
+{_DIMENSION_CATALOGUE}
+
 You have access to the following tools:
-- list_metrics(): returns the exact metric names you must use
-- list_dimensions(): returns the exact dimension names you must use
 - run_query(metric, dimensions, time_range): fetch a metric
 - compare_periods(metric, dimensions, period_1, period_2): compare two periods
 - drill_down(metric, current_dimensions, new_dimension, time_range): segment deeper
@@ -27,10 +45,7 @@ You have access to the following tools:
   Both metrics must be from tables compatible with the chosen dimension.
 
 CRITICAL — Semantic layer rules:
-- ALWAYS call list_metrics() and list_dimensions() on your first step to get the
-  exact allowed names. Never guess column names like 'marketing_channel' or
-  'device_type' — use the semantic names returned by those tools (e.g. 'channel',
-  'device').
+- Use ONLY the metric and dimension names listed above. Never guess column names.
 - Valid time ranges: today, last_7_days, last_30_days, last_90_days, this_week,
   this_month, this_quarter, this_year, previous_7_days, previous_30_days,
   previous_month, previous_quarter.
@@ -56,7 +71,7 @@ _executor_step = LlmAgent(
     name="executor_step",
     model=settings.model_executor,
     instruction=EXECUTOR_STEP_INSTRUCTION,
-    tools=[run_query, compare_periods, drill_down, list_metrics, list_dimensions, decompose, correlate],
+    tools=[run_query, compare_periods, drill_down, decompose, correlate],
     output_key="draft_answer",
 )
 
