@@ -223,12 +223,23 @@ flowchart TD
     %% ---------------- ANALYSIS PATH ----------------
     CL -->|Yes| D{Intent Type}
 
-    D -->|Single Value| E[Plan: 1 step query]
+    D -->|Single Value| FP[Fast Path<br/>run_query directly<br/>no ADK loop]
     D -->|Comparison| F[Plan: Multi-query comparison]
     D -->|Insight / Root Cause| G[Plan: Iterative drill-down]
 
-    E --> H[Structured Analysis Plan]
-    F --> H
+    %% ---------------- FAST PATH ----------------
+    FP --> FPTOOL[run_query]
+    FPTOOL --> SL_FP[Semantic Layer<br/>Resolve metric → SQL]
+    SL_FP --> CACHE_FP{Redis Cache?}
+    CACHE_FP -->|hit| FPANS[Build FinalAnswer]
+    CACHE_FP -->|miss| BQ_FP[BigQuery Execution]
+    BQ_FP --> CACHE_WRITE_FP[(Write to Redis)]
+    CACHE_WRITE_FP --> FPANS
+    FPANS --> SAVEFP[Save to messages table]
+    SAVEFP --> DB
+    SAVEFP --> AA
+
+    F --> H[Structured Analysis Plan]
     G --> H
 
     %% ---------------- FRESH ADK SESSION PER REQUEST ----------------
@@ -259,9 +270,13 @@ flowchart TD
     O2 --> P
     O3 --> P
 
-    P --> Q[BigQuery Execution<br/>asyncio.wait_for · 30s timeout]
+    P --> CACHE{Redis Cache?}
+    CACHE -->|hit| R
+    CACHE -->|miss| Q[BigQuery Execution<br/>asyncio.wait_for · 30s timeout]
+    Q --> CACHEWRITE[(Write to Redis)]
+    CACHEWRITE --> R
 
-    Q --> R[Observation · Query Result]
+    R[Observation · Query Result]
 
     %% ---------------- REACT LOOP CONTROL ----------------
     R --> S{Success Criteria Met?}
@@ -288,7 +303,7 @@ flowchart TD
     XY --> Z[Parse FinalAnswer JSON<br/>summary · findings · evidence · confidence]
 
     %% ---------------- SAVE & RESPOND ----------------
-    Z --> SAVE[Save summary to messages table]
+    Z --> SAVE[Save to messages table]
     SAVE --> DB
     SAVE --> AA[Return structured FinalAnswer to User]
 ```
@@ -308,19 +323,25 @@ The last 6 messages are fetched before each planner call so follow-up questions
 - Decides the analysis path: single value / comparison / insight
 - If the intent is ambiguous → returns a **clarification question**, saves the exchange to the messages table, and skips the executor
 
-#### 3. Fresh ADK Session per Request
+#### 3. Fast Path — Single Value
 
-A new ADK session is created for every request with the `analysis_plan` injected as initial state.
-This prevents old tool results from prior turns bleeding into the new execution context.
-Conversation memory is provided by the messages table, not by ADK session history.
+For `single_value` intents (one metric, known dimensions, known time range), the API calls
+`run_query` directly and builds a `FinalAnswer` without spinning up the ADK Executor or Critic.
+This saves 3–4 LLM round-trips for the most common query type.
 
-#### 4. analysis_loop — Outer LoopAgent (max 3 retries)
+#### 4. Fresh ADK Session per Request (Comparison & Insight only)
+
+For `comparison` and `insight` intents, a new ADK session is created with the `analysis_plan`
+injected as initial state. This prevents old tool results from prior turns bleeding into the
+new execution context. Conversation memory is provided by the messages table, not ADK.
+
+#### 5. analysis_loop — Outer LoopAgent (max 3 retries)
 
 Wraps the Executor and CriticGate. Each iteration is one full attempt:
 Executor runs → Critic validates → retry if needed.
 Stops when `CriticGate` escalates (`validated=True`) or retries are exhausted.
 
-#### 5. Executor — Inner ReAct LoopAgent (max 10 steps)
+#### 6. Executor — Inner ReAct LoopAgent (max 10 steps)
 
 The core reasoning engine (`gemini-2.5-flash`):
 
@@ -332,19 +353,20 @@ Thought → Action → Observation → Thought → ...
 - Keeps querying and drilling down until success criteria are met
 - Writes `state.draft_answer` when done
 
-#### 6. Tool Layer — Semantic Abstraction
+#### 7. Tool Layer — Semantic Abstraction + Redis Cache
 
 - The Semantic Layer translates metric requests into SQL
-- BigQuery executes the query via `asyncio.wait_for` with a hard 30s timeout
+- Every query checks Redis first (5 min TTL, keyed on SQL MD5); on a miss it hits BigQuery and writes the result back to Redis
+- BigQuery executes via `asyncio.wait_for` with a hard 30s timeout
 - The agent never writes or touches raw SQL directly
 
-#### 7. CriticGate — Custom BaseAgent (bottom)
+#### 8. CriticGate — Custom BaseAgent (bottom)
 
 - Runs the critic `LlmAgent` (`gemini-2.5-pro`) to validate correctness and completeness
 - `validated=True` → yields `Event(escalate=True)` → `analysis_loop` stops
 - `validated=False` → writes `critic_notes` to state → loop retries with executor
 
-#### 8. FinalAnswer & Response
+#### 9. FinalAnswer & Response
 
 The `FinalAnswer` JSON (summary, findings, evidence, confidence, validated) is parsed from the last ADK event.
 Only the `summary` is saved to the messages table for clean history.
