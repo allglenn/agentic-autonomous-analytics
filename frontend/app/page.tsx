@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
+import dynamic from "next/dynamic";
+
+// Import Highcharts dynamically to avoid SSR issues
+const HighchartsReact = dynamic(() => import("highcharts-react-official"), {
+  ssr: false,
+});
+import Highcharts from "highcharts";
 
 interface FinalAnswer {
   summary: string;
@@ -10,6 +17,7 @@ interface FinalAnswer {
   confidence: number;
   validated: boolean;
   critic_notes: string | null;
+  chart?: any; // Highcharts config
 }
 
 interface Message {
@@ -386,6 +394,11 @@ export default function ChatPage() {
                               <ul className="space-y-1">
                                 {fa.findings.map((f, i) => <li key={i} className="text-[#9CA3AF] leading-relaxed">• {f}</li>)}
                               </ul>
+                            </div>
+                          )}
+                          {fa.chart && (
+                            <div className="px-4 py-4 border-b border-[#1E1E1E] bg-[#0D0D0D]">
+                              <HighchartsReact highcharts={Highcharts} options={fa.chart} />
                             </div>
                           )}
                           {fa.evidence?.length > 0 && (
