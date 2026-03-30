@@ -302,10 +302,28 @@ flowchart TD
 
     XY --> Z[Parse FinalAnswer JSON<br/>summary · findings · evidence · confidence]
 
+    %% ---------------- CHART GENERATION ----------------
+    Z --> CG[Chart Generator Agent<br/>LlmAgent · gemini-2.5-pro<br/>Evaluate if chart needed]
+
+    CG --> CGD{Chart Needed?}
+
+    CGD -->|Yes - Distribution| CGP1[Generate Pie Chart Config]
+    CGD -->|Yes - Time Series| CGP2[Generate Line Chart Config]
+    CGD -->|Yes - Comparison| CGP3[Generate Column Chart Config]
+    CGD -->|No| CGN[Skip chart]
+
+    CGP1 --> CGC[Convert to Highcharts<br/>Apply dark theme styling]
+    CGP2 --> CGC
+    CGP3 --> CGC
+    CGN --> SAVE
+
+    CGC --> CGA[Add chart to answer dict]
+    CGA --> SAVE
+
     %% ---------------- SAVE & RESPOND ----------------
-    Z --> SAVE[Save to messages table]
+    SAVE[Save to messages table<br/>answer + chart if present]
     SAVE --> DB
-    SAVE --> AA[Return structured FinalAnswer to User]
+    SAVE --> AA[Return FinalAnswer + chart to User]
 ```
 
 ### How to Read This Diagram
@@ -328,6 +346,9 @@ The last 6 messages are fetched before each planner call so follow-up questions
 For `single_value` intents (one metric, known dimensions, known time range), the API calls
 `run_query` directly and builds a `FinalAnswer` without spinning up the ADK Executor or Critic.
 This saves 3–4 LLM round-trips for the most common query type.
+
+Chart generation still runs on the fast path if the query has dimensional breakdowns
+(e.g., "sessions by traffic source").
 
 #### 4. Fresh ADK Session per Request (Comparison & Insight only)
 
@@ -366,11 +387,29 @@ Thought → Action → Observation → Thought → ...
 - `validated=True` → yields `Event(escalate=True)` → `analysis_loop` stops
 - `validated=False` → writes `critic_notes` to state → loop retries with executor
 
-#### 9. FinalAnswer & Response
+#### 9. Chart Generation (Optional Enhancement)
+
+After the Critic validates the answer, the Chart Generator Agent (`gemini-2.5-pro`) evaluates
+whether a visualization would enhance understanding:
+
+- **Distribution queries** (sessions by traffic_source) → Pie chart
+- **Time series** (revenue over days/weeks) → Line chart
+- **Category comparisons** (revenue by channel) → Column chart
+- **Single values or "why" questions** → No chart
+
+The generator extracts actual dimension values from query results and creates a simplified
+`ChartConfig` (avoiding `Dict[str, Any]` to prevent Google GenAI API errors). This is then
+converted to a full Highcharts configuration with dark theme styling matching the frontend
+(#1A56DB primary blue, transparent backgrounds, styled tooltips).
+
+The chart is added to the answer dict dynamically (not in the Pydantic model) before saving
+and returning to the user.
+
+#### 10. FinalAnswer & Response
 
 The `FinalAnswer` JSON (summary, findings, evidence, confidence, validated) is parsed from the last ADK event.
-Only the `summary` is saved to the messages table for clean history.
-The full structured object is returned to the frontend for rich display.
+If a chart was generated, it's added to the response as `answer.chart` (Highcharts config object).
+The full structured object with optional chart is saved to messages table and returned to the frontend for rich display.
 
 ---
 
@@ -379,12 +418,13 @@ The full structured object is returned to the frontend for rich display.
 | Technology         | Purpose                                                      |
 | ------------------ | ------------------------------------------------------------ |
 | Google ADK 1.27.4  | Agent orchestration (`LlmAgent`, `LoopAgent`…)               |
-| Gemini 2.5 Pro     | Planner + Critic reasoning                                   |
+| Gemini 2.5 Pro     | Planner + Critic + Chart Generator reasoning                 |
 | Gemini 2.5 Flash   | Executor tool-call loop                                      |
 | BigQuery           | Cloud data warehouse                                         |
 | Semantic Layer     | Metric abstraction — no raw SQL in agents                    |
 | PostgreSQL         | ADK session state + conversations & messages tables          |
 | Redis              | Query result cache (5 min TTL, shared across replicas)       |
+| Highcharts         | Chart visualization library (pie, line, column charts)       |
 | Python / FastAPI   | Backend + REST API                                           |
 | Next.js 14         | Chat frontend (port 3000)                                    |
 | Docker / Cloud Run | Containerised deployment                                     |
@@ -718,6 +758,7 @@ These are pure GCP console / DDL changes — no application code needed. With re
 
 - [x] Add caching layer (Redis, 5 min TTL, in-memory fallback)
 - [x] Add memory (conversation context via messages table)
+- [x] Add automatic chart generation (Highcharts integration)
 - [ ] Add alerting (proactive insights)
 - [ ] Add dashboard integration (Looker / Streamlit)
 - [ ] Multi-tenant SaaS support
@@ -739,7 +780,8 @@ This system is essentially an **AI Data Analyst on top of your data warehouse** 
 - Multi-agent collaboration (dedicated planner / analyst / critic agents)
 - Cost-aware query planning
 - Anomaly detection models
-- Auto-generated dashboards
+- Multi-series charts (comparing multiple metrics on one chart)
+- Exportable chart images and data tables
 
 ---
 
