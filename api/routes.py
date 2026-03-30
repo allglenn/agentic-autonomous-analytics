@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -8,6 +9,8 @@ from google.adk.runners import Runner
 from google.genai.types import Content, Part
 from orchestrator.pipeline import analysis_loop
 from orchestrator.planner_runner import run_planner
+from orchestrator.chart_runner import generate_chart
+from orchestrator.session_utils import extract_tool_results_from_events
 from models.plan import AnalysisPlan, IntentType
 from models.answer import FinalAnswer
 from tools.run_query import run_query
@@ -25,7 +28,7 @@ logger = logging.getLogger(__name__)
 runner = Runner(agent=analysis_loop, app_name="data_analyst", session_service=session_service)
 
 
-async def _fast_single_value(plan: AnalysisPlan) -> FinalAnswer:
+async def _fast_single_value(plan: AnalysisPlan, user_question: str) -> FinalAnswer:
     """
     Fast path for single_value intents: call run_query directly, skip the
     Executor+Critic loop entirely. Saves 3-4 LLM round-trips.
@@ -63,13 +66,31 @@ async def _fast_single_value(plan: AnalysisPlan) -> FinalAnswer:
         ]
         summary = f"{metric.replace('_', ' ').title()} by {dim} for {time_range} ({len(rows)} segments)."
 
-    return FinalAnswer(
+    answer = FinalAnswer(
         summary=summary,
         findings=findings,
         evidence=[f"Source: {metric} / {plan.time_range}"],
         confidence=0.95,
         validated=True,
     )
+
+    # Generate chart if applicable
+    chart_config = None
+    try:
+        chart_config = await generate_chart(
+            user_question=user_question,
+            final_answer=answer.model_dump(),
+            analysis_plan=plan.model_dump(),
+            query_results=[result],
+        )
+    except Exception as e:
+        logger.warning(f"Chart generation failed in fast path: {e}")
+
+    # Return answer dict with chart added dynamically
+    # (chart not in Pydantic model to avoid Dict[str, Any] API error)
+    answer_dict = answer.model_dump()
+    answer_dict["chart"] = chart_config
+    return answer_dict
 
 
 class QuestionRequest(BaseModel):
@@ -142,7 +163,7 @@ async def ask(request: QuestionRequest):
             # Executor+Critic loop and answer directly from run_query.
             if plan.intent == IntentType.SINGLE_VALUE and len(plan.metrics) == 1:
                 fast_started = time.monotonic()
-                fa = await _fast_single_value(plan)
+                fa_dict = await _fast_single_value(plan, request.question)
                 logger.info(
                     "[ask:%s] fast_path_done elapsed=%.2fs",
                     req_id,
@@ -153,7 +174,8 @@ async def ask(request: QuestionRequest):
                     if not any(c.id == sid for c in existing):
                         await create_conversation(sid, request.question[:60])
                     await add_message(sid, "user", request.question)
-                    await add_message(sid, "assistant", fa.model_dump_json())
+                    # Save as JSON (chart included if present)
+                    await add_message(sid, "assistant", json.dumps(fa_dict))
                 except Exception:
                     pass
                 logger.info(
@@ -161,7 +183,7 @@ async def ask(request: QuestionRequest):
                     req_id,
                     time.monotonic() - ask_started,
                 )
-                return {"answer": fa.model_dump()}
+                return {"answer": fa_dict}
 
             # Step 2b: comparison/insight intents — run the full Executor+Critic loop.
             # Create a fresh ADK session per request so old tool results never bleed
@@ -218,6 +240,9 @@ async def ask(request: QuestionRequest):
             if final is None:
                 raise HTTPException(status_code=500, detail="No answer produced.")
 
+            # Extract tool results from events for chart generation
+            tool_results = extract_tool_results_from_events(events)
+
             # Extract text from final event
             raw_text = " ".join(
                 p.text for p in final.parts if getattr(p, "text", None)
@@ -226,9 +251,29 @@ async def ask(request: QuestionRequest):
             # Try to parse as FinalAnswer for structured response
             try:
                 fa = FinalAnswer.model_validate_json(raw_text)
+
+                # Generate chart for the final answer
+                chart_config = None
+                try:
+                    chart_config = await generate_chart(
+                        user_question=request.question,
+                        final_answer=fa.model_dump(),
+                        analysis_plan=plan.model_dump(),
+                        query_results=tool_results,
+                    )
+                    if chart_config:
+                        logger.info("[ask:%s] chart_generated", req_id)
+                except Exception as e:
+                    logger.warning(f"[ask:%s] chart_generation_failed: {e}", req_id)
+
+                # Add chart to answer dict dynamically
+                # (chart not in Pydantic model to avoid Dict[str, Any] API error)
+                answer_dict = fa.model_dump()
+                answer_dict["chart"] = chart_config
+
                 # Save full JSON so history can render the structured card
                 try:
-                    await add_message(sid, "assistant", fa.model_dump_json())
+                    await add_message(sid, "assistant", json.dumps(answer_dict))
                 except Exception:
                     pass
                 logger.info(
@@ -236,7 +281,7 @@ async def ask(request: QuestionRequest):
                     req_id,
                     time.monotonic() - ask_started,
                 )
-                return {"answer": fa.model_dump()}
+                return {"answer": answer_dict}
             except Exception:
                 pass  # Not a FinalAnswer — return raw text
 

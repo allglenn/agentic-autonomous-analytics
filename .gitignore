@@ -50,3 +50,7 @@ logs/
 # Distribution
 *.tar.gz
 *.whl
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
