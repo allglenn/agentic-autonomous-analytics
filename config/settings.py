@@ -7,9 +7,10 @@ class Settings(BaseSettings):
     google_cloud_project: str = "local-project"
     bigquery_dataset: str = "analytics"
     bigquery_emulator_host: str = ""
-    model_planner: str = "gemini-2.5-pro"
+    model_planner: str = "gemini-2.5-flash"
     model_executor: str = "gemini-2.5-flash"
     model_critic: str = "gemini-2.5-pro"
+    model_chart: str = "gemini-2.5-flash"
     api_host: str = "0.0.0.0"
     api_port: int = 8080
     database_url: str = "postgresql+asyncpg://adk:adk@localhost:5432/adk_sessions"

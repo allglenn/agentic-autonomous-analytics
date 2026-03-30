@@ -1,0 +1,18 @@
+.git
+.env
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Frontend — handled by its own build context
+frontend/node_modules
+frontend/.next
+frontend/.env*
+
+# Misc
+*.log
+.DS_Store

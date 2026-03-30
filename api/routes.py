@@ -28,10 +28,13 @@ logger = logging.getLogger(__name__)
 runner = Runner(agent=analysis_loop, app_name="data_analyst", session_service=session_service)
 
 
-async def _fast_single_value(plan: AnalysisPlan, user_question: str) -> FinalAnswer:
+async def _fast_single_value(plan: AnalysisPlan) -> tuple[dict, list]:
     """
     Fast path for single_value intents: call run_query directly, skip the
     Executor+Critic loop entirely. Saves 3-4 LLM round-trips.
+
+    Returns (answer_dict_without_chart, query_results) so the caller can
+    parallelise chart generation with DB persistence.
     """
     result = await run_query(
         metric=plan.metrics[0],
@@ -73,24 +76,7 @@ async def _fast_single_value(plan: AnalysisPlan, user_question: str) -> FinalAns
         confidence=0.95,
         validated=True,
     )
-
-    # Generate chart if applicable
-    chart_config = None
-    try:
-        chart_config = await generate_chart(
-            user_question=user_question,
-            final_answer=answer.model_dump(),
-            analysis_plan=plan.model_dump(),
-            query_results=[result],
-        )
-    except Exception as e:
-        logger.warning(f"Chart generation failed in fast path: {e}")
-
-    # Return answer dict with chart added dynamically
-    # (chart not in Pydantic model to avoid Dict[str, Any] API error)
-    answer_dict = answer.model_dump()
-    answer_dict["chart"] = chart_config
-    return answer_dict
+    return answer.model_dump(), [result]
 
 
 class QuestionRequest(BaseModel):
@@ -163,27 +149,46 @@ async def ask(request: QuestionRequest):
             # Executor+Critic loop and answer directly from run_query.
             if plan.intent == IntentType.SINGLE_VALUE and len(plan.metrics) == 1:
                 fast_started = time.monotonic()
-                fa_dict = await _fast_single_value(plan, request.question)
+                answer_dict, query_results = await _fast_single_value(plan)
                 logger.info(
                     "[ask:%s] fast_path_done elapsed=%.2fs",
                     req_id,
                     time.monotonic() - fast_started,
                 )
+
+                # Chart generation and conversation/user-message DB setup are
+                # independent — run them in parallel.
+                async def _fast_db_setup():
+                    try:
+                        existing = await get_conversations()
+                        if not any(c.id == sid for c in existing):
+                            await create_conversation(sid, request.question[:60])
+                        await add_message(sid, "user", request.question)
+                    except Exception:
+                        pass
+
+                chart_config, _ = await asyncio.gather(
+                    generate_chart(
+                        user_question=request.question,
+                        final_answer=answer_dict,
+                        analysis_plan=plan.model_dump(),
+                        query_results=query_results,
+                    ),
+                    _fast_db_setup(),
+                )
+                answer_dict["chart"] = chart_config
+
                 try:
-                    existing = await get_conversations()
-                    if not any(c.id == sid for c in existing):
-                        await create_conversation(sid, request.question[:60])
-                    await add_message(sid, "user", request.question)
-                    # Save as JSON (chart included if present)
-                    await add_message(sid, "assistant", json.dumps(fa_dict))
+                    await add_message(sid, "assistant", json.dumps(answer_dict))
                 except Exception:
                     pass
+
                 logger.info(
                     "[ask:%s] success total_elapsed=%.2fs",
                     req_id,
                     time.monotonic() - ask_started,
                 )
-                return {"answer": fa_dict}
+                return {"answer": answer_dict}
 
             # Step 2b: comparison/insight intents — run the full Executor+Critic loop.
             # Create a fresh ADK session per request so old tool results never bleed
@@ -251,13 +256,14 @@ async def ask(request: QuestionRequest):
             # Try to parse as FinalAnswer for structured response
             try:
                 fa = FinalAnswer.model_validate_json(raw_text)
+                answer_dict = fa.model_dump()
 
                 # Generate chart for the final answer
                 chart_config = None
                 try:
                     chart_config = await generate_chart(
                         user_question=request.question,
-                        final_answer=fa.model_dump(),
+                        final_answer=answer_dict,
                         analysis_plan=plan.model_dump(),
                         query_results=tool_results,
                     )
@@ -268,7 +274,6 @@ async def ask(request: QuestionRequest):
 
                 # Add chart to answer dict dynamically
                 # (chart not in Pydantic model to avoid Dict[str, Any] API error)
-                answer_dict = fa.model_dump()
                 answer_dict["chart"] = chart_config
 
                 # Save full JSON so history can render the structured card

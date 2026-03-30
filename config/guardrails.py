@@ -72,7 +72,7 @@ class Guardrails(BaseModel):
     ]
 
     max_query_rows: int = 10_000       # BigQuery cost control
-    max_executor_steps: int = 10       # ReAct loop hard limit
+    max_executor_steps: int = 5        # ReAct loop hard limit
 
 
 guardrails = Guardrails()

@@ -190,7 +190,7 @@ Always output valid JSON matching the ChartDecision schema.
 
 chart_generator = LlmAgent(
     name="chart_generator",
-    model=settings.model_planner,  # Use planner model for quality
+    model=settings.model_chart,
     instruction=CHART_GENERATOR_INSTRUCTION,
     output_schema=ChartDecision,
     output_key="chart_decision",
