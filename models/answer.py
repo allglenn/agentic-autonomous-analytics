@@ -16,6 +16,8 @@ class FinalAnswer(BaseModel):
     confidence: float  # must be 0.0 – 1.0
     validated: bool = True
     critic_notes: Optional[str] = None
+    # NOTE: chart field is added dynamically in API layer to avoid
+    # Dict[str, Any] in LLM output schema (Google GenAI API restriction)
 
     @field_validator("confidence")
     @classmethod
