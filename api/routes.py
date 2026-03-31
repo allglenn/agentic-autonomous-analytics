@@ -186,16 +186,15 @@ async def ask(request: QuestionRequest):
                 return {"answer": fa_dict}
 
             # Step 2b: comparison/insight intents — run the full Executor+Critic loop.
-            # Create a fresh ADK session per request so old tool results never bleed
-            # into the new execution context.
-            adk_sid = str(uuid.uuid4())
+            # Reuse the conversation session ID so the agent has access to prior
+            # tool execution context for follow-up questions.
             session = await session_service.create_session(
                 app_name="data_analyst",
                 user_id="user",
-                session_id=adk_sid,
+                session_id=sid,
                 state={"analysis_plan": plan.model_dump(), "critic_notes": ""},
             )
-            logger.info("[ask:%s] adk_session_created sid=%s", req_id, adk_sid)
+            logger.info("[ask:%s] adk_session_reused sid=%s", req_id, sid)
 
             # Register conversation and save user message
             try:
